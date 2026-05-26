@@ -185,10 +185,10 @@ async def llm_score(cv_text: str, job_title: str, jd_text: str) -> MatchResult:
     user = f"""Evaluate this candidate's fit for the job.
 
 ## Candidate CV
-{cv_text[:4000]}
+{cv_text}
 
 ## Job: {job_title}
-{jd_text[:3000]}
+{jd_text[:8000]}
 
 Return ONLY valid JSON (no markdown):
 {{
@@ -198,7 +198,7 @@ Return ONLY valid JSON (no markdown):
   "explanation": "2-3 sentence assessment focusing on technical fit and role alignment"
 }}"""
 
-    raw, provider = await call_llm(user=user, system=system, max_tokens=600)
+    raw, provider = await call_llm(user=user, system=system, max_tokens=1024)
 
     # Strip markdown fences
     raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
