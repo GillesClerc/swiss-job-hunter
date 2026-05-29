@@ -24,6 +24,7 @@ class JobStatus(str, PyEnum):
     ANALYZED     = "analyzed"
     SHORTLISTED  = "shortlisted"
     VIEWED       = "viewed"       # opened the listing, not yet applied
+    CONSIDERING  = "considering"  # read JD, interested but not ready to apply
     APPLIED      = "applied"
     REJECTED     = "rejected"
     INTERVIEWING = "interviewing"

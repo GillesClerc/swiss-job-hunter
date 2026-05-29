@@ -38,10 +38,13 @@ Swiss Job Hunter automates the boring parts:
 | 📄 | **Full JD enrichment** — fetches complete descriptions beyond preview snippets |
 | ⭐ | **CV matching** — two-stage scoring: dynamic keyword pre-filter (LLM-extracted from CV, cached) then full LLM deep analysis; irrelevant jobs are archived before consuming tokens |
 | 🎯 | **Direction tagging** — auto-detected from `data/cv_*.txt` files; each direction uses its own CV and keyword cache |
+| ⚡ | **Keyword presets** — one-click preset groups per direction (e.g. PERCEPTION loads `computer vision engineer`, `ADAS engineer`, `sensor fusion engineer`, etc.) |
+| 🔖 | **Batch keyword search** — tag-based input; type a keyword and press Enter or comma to add, Backspace to remove; all keywords searched in sequence across selected sources |
+| 🚀 | **One-click pipeline** — SEARCH + ENRICH + SCORE chains all three steps automatically, with LinkedIn cooldown between keywords |
 | 🏢 | **Company lookup** — LLM-generated company summaries, cached per company |
 | ✍ | **Cover letter generation** — personalized EN/DE letters via Claude API |
 | 🌐 | **Description translation** — translate JDs to English on demand |
-| 📋 | **Kanban tracker** — NEW → Viewed → Applied → Interview → Offer |
+| 📋 | **Kanban tracker** — NEW → Viewed → Considering → Applied → Interview → Offer |
 | 🕐 | **Timeline** — per-job event log (recruiter calls, interviews, offers, rejections) |
 | ★ | **Star rating** — manual 1–5 star interest rating per job, filterable in the board |
 | 🔢 | **Score threshold filter** — show and count only jobs at or above a match-score percentage |
@@ -93,7 +96,7 @@ Each file defines a search direction; the backend auto-detects them at startup.
 cp your_cv.txt data/cv_agent.txt
 
 # Multiple directions (different roles → different CVs)
-cp your_agent_cv.txt     data/cv_agent.txt
+cp your_agent_cv.txt      data/cv_agent.txt
 cp your_perception_cv.txt data/cv_perception.txt
 ```
 
@@ -121,23 +124,38 @@ The sidebar guides you through the full pipeline:
 ① SEARCH → ② PIPELINE (Enrich → Score → Company Lookup → Purge) → FILTER → LOG
 ```
 
-**① SEARCH** — Pick a direction (ALL / AGENT / PERCEPTION / …), keyword, and location (leave blank for all Switzerland). Select sources and hit **RUN SEARCH**. New jobs are tagged with the active direction.
+**① SEARCH**
+
+Pick a direction (ALL / AGENT / PERCEPTION / …), then choose keywords and sources.
+
+- **Keyword presets** — click **⚡ PERCEPTION** or **⚡ AGENT** to instantly load a curated keyword group and switch to the matching direction. Presets cover the most effective search terms for each role type (e.g. `computer vision engineer`, `ADAS engineer`, `sensor fusion engineer`, `autonomous driving engineer`, `robotics engineer`, `perception engineer` for PERCEPTION).
+- **Batch keywords** — type a keyword and press **Enter** or **,** (comma) to add it as a tag; press **Backspace** to remove the last one. All keywords are searched in sequence across every selected source.
+- **Location** — leave blank for all Switzerland, or type a city. **ALL CH** button clears it.
+- **Pages** — number of pages to fetch per source per keyword.
+- **Sources** — toggle individual boards or use **ALL**.
 
 When **LinkedIn** is selected, two extra dropdowns appear:
 - **Time range** — 24h / 7 days / 30 days
-- **Experience level** — Entry–Senior / Associate–Senior (default) / Senior only / Senior–Director; maps to LinkedIn's `f_E` filter and applied at source before any job is fetched
+- **Experience level** — Entry–Senior / Associate–Senior (default) / Senior only / Senior–Director
+
+**RUN SEARCH** scrapes only. **⚡ SEARCH + ENRICH + SCORE** runs the full pipeline in one click:
+1. Search all keywords across selected sources (with automatic 5s LinkedIn cooldown between keywords)
+2. Enrich descriptions for every source
+3. LLM score all enriched jobs
+
+The pipeline button is protected against double-clicks — a second click while running logs `✗ Pipeline already running` and is ignored.
 
 **② PIPELINE**
 - **ENRICH DESCRIPTIONS** — fetches full JDs for jobs that only have a preview snippet
 - **ENRICH + LLM SCORE** — enriches then immediately scores with LLM in one step
 - **SCORE (KEYWORD)** — fast keyword match against your CV, no API cost
-- **SCORE (LLM)** — two-stage: first runs a keyword pre-filter using skills extracted from your CV (cached to `data/cv_keywords_{direction}.json`); jobs below the keyword threshold are archived without an LLM call, the rest get full deep analysis via Claude/DeepSeek
+- **SCORE (LLM)** — two-stage: keyword pre-filter first (skills extracted from your CV, cached to `data/cv_keywords_{direction}.json`); jobs below the threshold are archived without an LLM call, the rest get full deep analysis via Claude/DeepSeek
 - **LOOKUP COMPANIES** — generates a short LLM summary for each company, cached
 - **PREVIEW / PURGE** — dry-run or delete scored jobs below a score threshold
 
-**FILTER** — filter by status (NEW / SHORTLISTED / APPLIED / …), minimum star rating (★–★★★★★), minimum match score (≥ N%), and free-text search
+**FILTER** — filter by status (NEW / SHORTLISTED / VIEWED / CONSIDERING / APPLIED / …), minimum star rating (★–★★★★★), minimum match score (≥ N%), and free-text search
 
-**LOG** — live SSE output from every pipeline operation
+**LOG** — live SSE output from every pipeline operation; shows a pulsing **●** indicator while any operation is running, and per-source progress every 10 jobs fetched
 
 **BOARD** — job list with score bars, status badges, direction tags, and star ratings; click a job to open its detail panel with tabs:
 - **DETAIL** — full JD, match score, translate button
@@ -146,6 +164,23 @@ When **LinkedIn** is selected, two extra dropdowns appear:
 - **APPLY** — cover letter generation and email application
 
 **TRACKER** — Kanban board across all application stages
+
+---
+
+## Application Statuses
+
+| Status | Meaning |
+|---|---|
+| NEW | Just scraped, not yet reviewed |
+| ANALYZED | Keyword-scored, awaiting LLM scoring |
+| SHORTLISTED | Scored above threshold |
+| VIEWED | JD opened in the UI |
+| CONSIDERING | Read the JD, interested but not ready to apply |
+| APPLIED | Application sent |
+| INTERVIEWING | In interview process |
+| OFFER | Offer received |
+| REJECTED | Rejected |
+| ARCHIVED | Filtered out (low score or manual) |
 
 ---
 
@@ -163,6 +198,9 @@ Restart the backend and the new directions appear automatically in the UI dropdo
 - Tags scraped jobs with the active direction
 - Loads the matching CV automatically when scoring or generating cover letters
 - Lets you filter the job list by direction
+- Uses direction-specific keyword caches for the pre-filter
+
+The **⚡ preset buttons** are mapped to directions by name — adding a `cv_perception.txt` file automatically makes the PERCEPTION preset available.
 
 Add as many directions as you like. The `data/cv.txt` file is used as a fallback in ALL mode.
 
@@ -282,6 +320,7 @@ Then `wsl --shutdown` and restart.
 
 - Random delays between requests (1.5–4s)
 - Retry with exponential backoff
+- Automatic 5s cooldown between keywords when LinkedIn is included
 - Respects rate limits — do not set `SCRAPER_DELAY_MIN` below 1.0
 
 ---

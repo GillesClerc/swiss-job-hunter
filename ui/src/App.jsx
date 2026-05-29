@@ -9,6 +9,7 @@ const STATUS_META = {
   analyzed:     { label: "ANALYZED",    color: "#2e7d52", bg: "rgba(56,189,248,0.12)" },
   shortlisted:  { label: "SHORTLISTED", color: "#f59e0b", bg: "rgba(245,158,11,0.12)" },
   viewed:       { label: "VIEWED",      color: "#7aa090", bg: "rgba(129,140,248,0.12)" },
+  considering:  { label: "CONSIDERING", color: "#38bdf8", bg: "rgba(56,189,248,0.12)" },
   applied:      { label: "APPLIED",     color: "#34d399", bg: "rgba(52,211,153,0.12)" },
   interviewing: { label: "INTERVIEW",   color: "#a78bfa", bg: "rgba(167,139,250,0.12)" },
   offer:        { label: "OFFER 🎉",    color: "#fb923c", bg: "rgba(251,146,60,0.12)" },
@@ -34,6 +35,11 @@ const EVENT_META = {
 const SOURCES = ["jobs.ch","jobscout24.ch","swissdevjobs.ch","jobup.ch","züri.jobs","efinancialcareers.ch","linkedin.com","michael-page.ch"];
 
 const DIRECTIONS_FALLBACK = ["agent", "perception"];
+
+const KEYWORD_PRESETS = {
+  perception: ["computer vision engineer", "ADAS engineer", "sensor fusion engineer", "autonomous driving engineer", "robotics engineer", "perception engineer"],
+  agent:      ["machine learning engineer", "AI engineer", "deep learning engineer", "LLM engineer"],
+};
 
 const APPLY_METHODS = [
   { id: "email",    label: "Email",    icon: "📧" },
@@ -119,9 +125,9 @@ function Btn({ onClick, label, icon, color="#2e7d52", disabled, small, loading }
   );
 }
 
-function LogPane({ lines }) {
+function LogPane({ lines, running }) {
   const ref = useRef();
-  useEffect(()=>{ if(ref.current) ref.current.scrollTop=ref.current.scrollHeight; },[lines]);
+  useEffect(()=>{ if(ref.current) ref.current.scrollTop=ref.current.scrollHeight; },[lines, running]);
   return (
     <div ref={ref} style={{
       flex:1,overflowY:"auto",background:"#e2e8dc",borderRadius:6,
@@ -139,6 +145,12 @@ function LogPane({ lines }) {
           }}>{l}</div>
         ))
       }
+      {running && (
+        <div style={{display:"flex",alignItems:"center",gap:5,marginTop:3,color:"#2e7d52"}}>
+          <span style={{animation:"logpulse 1s ease-in-out infinite"}}>●</span>
+          <span style={{fontSize:9,color:"#5a7a68"}}>running...</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -328,7 +340,7 @@ function TrackerBoard({ onSelectJob }) {
 
   useEffect(() => { load(); const t = setInterval(load, 15000); return ()=>clearInterval(t); }, [load]);
 
-  const cols = ["viewed","applied","interviewing","offer","rejected"];
+  const cols = ["viewed","considering","applied","interviewing","offer","rejected"];
   const byStatus = Object.fromEntries(cols.map(c => [c, items.filter(j=>j.status===c)]));
 
   const fmt = iso => iso ? new Date(iso).toLocaleDateString("de-CH",{day:"2-digit",month:"2-digit"}) : "—";
@@ -442,7 +454,9 @@ export default function App() {
   const [selected, setSelected] = useState(null);
   const [log, setLog] = useState([]);
   const [loading, setLoading] = useState({});
-  const [searchKw, setSearchKw] = useState("Agent");
+  const pipelineRunning = useRef(false);
+  const [searchKws, setSearchKws] = useState(["Agent"]);
+  const [searchKwInput, setSearchKwInput] = useState("");
   const [searchLoc, setSearchLoc] = useState("Zürich");
   const [searchSrc, setSearchSrc] = useState(["jobs.ch"]);
   const [filterStatus, setFilterStatus] = useState("all");
@@ -488,7 +502,7 @@ export default function App() {
   useEffect(() => {
     fetch(`${API}/config`).then(r=>r.ok?r.json():null).then(cfg=>{
       if (!cfg) return;
-      setSearchKw(cfg.default_keyword || "Agent");
+      setSearchKws([cfg.default_keyword || "Agent"]);
       setSearchLoc(cfg.default_location || "Zürich");
     }).catch(()=>{});
     fetch(`${API}/directions`).then(r=>r.ok?r.json():null).then(dirs=>{
@@ -549,7 +563,7 @@ export default function App() {
     setShowOriginalDesc(false);
     setRightTab("detail");
     lookupCompany(job.company);
-    if (!["viewed","applied","interviewing","offer","rejected"].includes(job.status)) {
+    if (!["viewed","considering","applied","interviewing","offer","rejected"].includes(job.status)) {
       await fetch(`${API}/jobs/${job.id}/view`, { method:"POST" });
       fetchJobs(); fetchStats();
     }
@@ -558,20 +572,14 @@ export default function App() {
   const runStream = useCallback((endpoint, body, key) => {
     setLoading(p=>({...p,[key]:true}));
     addLog(`→ ${key} started`);
-
-    // Use fetch with ReadableStream — more reliable than EventSource for POST
-    const ctrl = new AbortController();
-
-    fetch(`${API}/${endpoint}`, {
+    return fetch(`${API}/${endpoint}`, {
       method:"POST",
       headers:{"Content-Type":"application/json","Accept":"text/event-stream"},
       body:JSON.stringify(body),
-      signal:ctrl.signal,
     }).then(async r => {
       if (!r.ok) {
         const err = await r.text();
         addLog(`✗ ${key} error: ${r.status} ${err.slice(0,100)}`);
-        setLoading(p=>({...p,[key]:false}));
         return;
       }
       const reader = r.body.getReader();
@@ -592,12 +600,36 @@ export default function App() {
       }
       addLog(`✓ ${key} done`);
     }).catch(e => {
-      if (e.name !== "AbortError") addLog(`✗ ${key} failed: ${e.message}`);
+      addLog(`✗ ${key} failed: ${e.message}`);
     }).finally(() => {
       setLoading(p=>({...p,[key]:false}));
       fetchJobs(); fetchStats();
     });
   }, [addLog, fetchJobs, fetchStats]);
+
+  const runPipeline = useCallback(async () => {
+    if (pipelineRunning.current) { addLog("✗ Pipeline already running"); return; }
+    const kws = searchKwInput.trim() ? [...searchKws, searchKwInput.trim()] : searchKws;
+    if (!kws.length) { addLog("✗ No keywords set"); return; }
+    const dir = direction === "all" ? null : direction;
+    const enrichable = ["jobs.ch","jobscout24.ch","swissdevjobs.ch","züri.jobs","efinancialcareers.ch","jobup.ch","linkedin.com","michael-page.ch"];
+    const enrichSources = searchSrc.filter(s => enrichable.includes(s));
+
+    pipelineRunning.current = true;
+    setLoading(p=>({...p, pipeline:true}));
+    addLog("━━━ PIPELINE START ━━━");
+    try {
+      await runStream("run/search", {keywords:kws, keyword:kws[0]||"", location:searchLoc, sources:searchSrc, pages:searchPages, semantic:false, direction:dir, linkedin_time_range:linkedinTimeRange, linkedin_experience_level:linkedinExpLevel}, "search");
+      for (const src of (enrichSources.length ? enrichSources : [searchSrc[0]||"jobs.ch"])) {
+        await runStream("run/enrich", {limit:9999, source:src, rescore_llm:false, direction:dir}, `enrich-${src}`);
+      }
+      await runStream("run/analyze", {limit:9999, llm:true, archive_below:threshold/100, direction:dir}, "analyze-llm");
+      addLog("━━━ PIPELINE DONE ━━━");
+    } finally {
+      pipelineRunning.current = false;
+      setLoading(p=>({...p, pipeline:false}));
+    }
+  }, [searchKws, searchKwInput, searchSrc, searchLoc, searchPages, direction, linkedinTimeRange, linkedinExpLevel, threshold, runStream, addLog]);
 
   const generateCover = async (job) => {
     setLoading(p=>({...p,cover:true}));
@@ -661,6 +693,7 @@ export default function App() {
         ::-webkit-scrollbar-thumb{background:#b0c4b8;border-radius:2px;}
         .jr:hover{background:#e2e8dc!important;}
         .jr.sel{background:#e2e8dc!important;border-left-color:#2e7d52!important;}
+        @keyframes logpulse{0%,100%{opacity:1}50%{opacity:0.2}}
         input,textarea{font-family:'JetBrains Mono',monospace;}
         input:focus,textarea:focus{outline:1px solid #2e7d5220;}
       `}</style>
@@ -710,6 +743,9 @@ export default function App() {
               <div style={{width:300,borderRight:"1px solid #d4dece",display:"flex",
                 flexDirection:"column",background:"#f0f3ed",flexShrink:0,overflow:"hidden"}}>
 
+                {/* Controls: scrollable, capped so Log stays visible */}
+                <div style={{overflowY:"auto",flexShrink:0,maxHeight:"65%"}}>
+
                 {/* Search */}
                 <div style={{padding:"6px 10px",borderBottom:"1px solid #d4dece"}}>
                   <div style={{fontSize:9,color:"#5a7a68",letterSpacing:"0.12em",fontWeight:700,marginBottom:4}}>① SEARCH</div>
@@ -724,8 +760,53 @@ export default function App() {
                       }}>{d.toUpperCase()}</button>
                     ))}
                   </div>
-                  <input value={searchKw} onChange={e=>setSearchKw(e.target.value)}
-                    placeholder="keyword" style={{...inp,marginBottom:4}}/>
+                  {/* keyword presets */}
+                  <div style={{display:"flex",gap:3,marginBottom:4}}>
+                    {Object.entries(KEYWORD_PRESETS).map(([dir, kws])=>(
+                      <button key={dir} onClick={()=>{ setSearchKws(kws); setSearchKwInput(""); setDirection(dir); }} style={{
+                        flex:1,fontSize:8,padding:"3px 0",borderRadius:3,border:"1px solid #2e7d5230",
+                        background:"#2e7d5210",color:"#2e7d52",cursor:"pointer",
+                        fontFamily:"monospace",fontWeight:700,letterSpacing:"0.04em",
+                      }}>⚡ {dir.toUpperCase()}</button>
+                    ))}
+                  </div>
+                  {/* keyword tags */}
+                  <div style={{display:"flex",flexWrap:"wrap",gap:3,marginBottom:3}}>
+                    {searchKws.map((kw,i)=>(
+                      <span key={i} style={{
+                        display:"inline-flex",alignItems:"center",gap:3,
+                        fontSize:9,padding:"2px 6px",borderRadius:3,
+                        background:"#2e7d5220",border:"1px solid #2e7d5240",color:"#2e7d52",
+                        fontFamily:"monospace",fontWeight:700,
+                      }}>
+                        {kw}
+                        <span onClick={()=>setSearchKws(p=>p.filter((_,j)=>j!==i))}
+                          style={{cursor:"pointer",fontWeight:900,opacity:0.6,lineHeight:1}}>×</span>
+                      </span>
+                    ))}
+                  </div>
+                  <input value={searchKwInput}
+                    onChange={e=>{
+                      const v = e.target.value;
+                      if (v.endsWith(",")) {
+                        const kw = v.slice(0,-1).trim();
+                        if (kw && !searchKws.includes(kw)) setSearchKws(p=>[...p,kw]);
+                        setSearchKwInput("");
+                      } else {
+                        setSearchKwInput(v);
+                      }
+                    }}
+                    onKeyDown={e=>{
+                      if (e.key==="Enter") {
+                        const kw = searchKwInput.trim();
+                        if (kw && !searchKws.includes(kw)) setSearchKws(p=>[...p,kw]);
+                        setSearchKwInput("");
+                      } else if (e.key==="Backspace" && !searchKwInput && searchKws.length>0) {
+                        setSearchKws(p=>p.slice(0,-1));
+                      }
+                    }}
+                    placeholder={searchKws.length ? "add keyword (Enter/,)" : "keyword (Enter to add)"}
+                    style={{...inp,marginBottom:4}}/>
                   <div style={{display:"flex",gap:5,marginBottom:4}}>
                     <input value={searchLoc} onChange={e=>setSearchLoc(e.target.value)}
                       placeholder="city (blank = all CH)" style={{...inp,flex:1}}/>
@@ -773,8 +854,16 @@ export default function App() {
                       <option value="4,5">LinkedIn · Senior–Director</option>
                     </select>
                   </>)}
-                  <Btn onClick={()=>runStream("run/search",{keyword:searchKw,location:searchLoc,sources:searchSrc,pages:searchPages,semantic:false,direction:direction==="all"?null:direction,linkedin_time_range:linkedinTimeRange,linkedin_experience_level:linkedinExpLevel},"search")}
-                    loading={loading.search} label="RUN SEARCH" icon="⬇" color="#2e7d52"/>
+                  <Btn onClick={()=>{
+                    const kws = searchKwInput.trim()
+                      ? [...searchKws, searchKwInput.trim()]
+                      : searchKws;
+                    runStream("run/search",{keywords:kws,keyword:kws[0]||"",location:searchLoc,sources:searchSrc,pages:searchPages,semantic:false,direction:direction==="all"?null:direction,linkedin_time_range:linkedinTimeRange,linkedin_experience_level:linkedinExpLevel},"search");
+                  }} loading={loading.search} label="RUN SEARCH" icon="⬇" color="#2e7d52"/>
+                  <Btn onClick={runPipeline}
+                    loading={loading.pipeline}
+                    disabled={loading.pipeline||loading.search||loading["analyze-llm"]||Object.keys(loading).some(k=>k.startsWith("enrich")&&loading[k])}
+                    label="SEARCH + ENRICH + SCORE" icon="⚡" color="#a78bfa"/>
                 </div>
 
                 {/* Pipeline + Cleanup */}
@@ -825,7 +914,7 @@ export default function App() {
                 <div style={{padding:"6px 10px",borderBottom:"1px solid #d4dece"}}>
                   <div style={{fontSize:9,color:"#5a7a68",letterSpacing:"0.12em",fontWeight:700,marginBottom:4}}>FILTER</div>
                   <div style={{display:"flex",flexWrap:"wrap",gap:3,marginBottom:5}}>
-                    {["all","new","shortlisted","viewed","applied","interviewing","offer","rejected"].map(s=>(
+                    {["all","new","shortlisted","viewed","considering","applied","interviewing","offer","rejected"].map(s=>(
                       <button key={s} onClick={()=>setFilterStatus(s)} style={{
                         fontSize:8,padding:"2px 7px",borderRadius:3,border:"1px solid",
                         borderColor:filterStatus===s?(STATUS_META[s]?.color||"#2e7d52")+"40":"#d4dece",
@@ -859,15 +948,16 @@ export default function App() {
                     ))}
                   </div>
                 </div>
+                </div>{/* end controls wrapper */}
 
                 {/* Log */}
-                <div style={{flex:1,padding:"8px 10px",display:"flex",flexDirection:"column",gap:4,overflow:"hidden"}}>
+                <div style={{flex:1,minHeight:90,padding:"8px 10px",display:"flex",flexDirection:"column",gap:4,overflow:"hidden"}}>
                   <div style={{display:"flex",justifyContent:"space-between",
                     fontSize:9,color:"#5a7a68",letterSpacing:"0.12em",fontWeight:700}}>
                     <span>LOG</span>
                     <button onClick={()=>setLog([])} style={{background:"none",border:"none",color:"#6b8c7a",cursor:"pointer",fontSize:9}}>CLEAR</button>
                   </div>
-                  <LogPane lines={log}/>
+                  <LogPane lines={log} running={Object.values(loading).some(Boolean)}/>
                 </div>
               </div>
 
@@ -1024,7 +1114,7 @@ export default function App() {
                         <div>
                           <div style={{fontSize:9,color:"#5a7a68",letterSpacing:"0.1em",fontWeight:700,marginBottom:7}}>UPDATE STATUS</div>
                           <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:10}}>
-                            {["viewed","shortlisted","applied","interviewing","offer","rejected","archived"].map(s=>(
+                            {["viewed","considering","shortlisted","applied","interviewing","offer","rejected","archived"].map(s=>(
                               <button key={s} onClick={()=>{
                                 if(s==="applied") setApplyModal(true);
                                 else updateStatus(selected.id,s);

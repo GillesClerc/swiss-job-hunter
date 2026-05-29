@@ -216,6 +216,7 @@ async def sse(gen: AsyncGenerator[str, None]) -> StreamingResponse:
 
 class SearchRequest(BaseModel):
     keyword: str = "ML engineer"
+    keywords: list[str] = []  # if non-empty, overrides keyword; each is searched in turn
     location: str = "Zürich"
     sources: list[str] = ["jobs.ch"]
     pages: int = 3
@@ -235,63 +236,71 @@ async def run_search(req: SearchRequest):
         from db.session import get_session
         init_db()
 
-        yield f"Searching: {req.keyword} in {req.location or 'Switzerland (all)'}"
+        kw_list = req.keywords if req.keywords else [req.keyword]
         total_new = 0
+        linkedin_in_sources = "linkedin.com" in req.sources
 
-        for source_name in req.sources:
-            scraper_cls = SCRAPER_REGISTRY.get(source_name)
-            if not scraper_cls:
-                yield f"✗ Unknown source: {source_name}"
-                continue
+        for kw_idx, kw in enumerate(kw_list):
+            if kw_idx > 0 and linkedin_in_sources:
+                yield f"⏳ LinkedIn cooldown 5s..."
+                await asyncio.sleep(5)
+            yield f"─── keyword: {kw} · {req.location or 'Switzerland (all)'}"
 
-            yield f"→ {source_name}"
-            new_count = 0
+            for source_name in req.sources:
+                scraper_cls = SCRAPER_REGISTRY.get(source_name)
+                if not scraper_cls:
+                    yield f"✗ Unknown source: {source_name}"
+                    continue
 
-            found_count = 0
-            try:
-                kwargs = {}
-                if source_name == "linkedin.com":
-                    kwargs["time_range"] = req.linkedin_time_range
-                    kwargs["experience_level"] = req.linkedin_experience_level
-                async with scraper_cls(**kwargs) as scraper:
-                    async for scraped in scraper.scrape(req.keyword, req.location, req.pages):
-                        found_count += 1
-                        try:
-                            if is_exact_duplicate(scraped.title, scraped.company, scraped.location):
+                yield f"→ {source_name}"
+                new_count = 0
+                found_count = 0
+                try:
+                    kwargs = {}
+                    if source_name == "linkedin.com":
+                        kwargs["time_range"] = req.linkedin_time_range
+                        kwargs["experience_level"] = req.linkedin_experience_level
+                    async with scraper_cls(**kwargs) as scraper:
+                        async for scraped in scraper.scrape(kw, req.location, req.pages):
+                            found_count += 1
+                            if found_count % 10 == 0:
+                                yield f"  ↳ {source_name}: {found_count} fetched so far..."
+                            try:
+                                if is_exact_duplicate(scraped.title, scraped.company, scraped.location):
+                                    continue
+                                job, created = get_or_create_job(scraped, direction=req.direction or None)
+                                if created:
+                                    try:
+                                        with get_session() as session:
+                                            raw = RawJob(
+                                                canonical_id=job.id,
+                                                source=scraped.source,
+                                                source_job_id=scraped.source_job_id,
+                                                url=scraped.url,
+                                                raw_html=scraped.raw_html,
+                                                raw_json=scraped.raw_json,
+                                            )
+                                            session.add(raw)
+                                    except Exception:
+                                        pass
+                                    new_count += 1
+                                    yield f"  + [{source_name}] {scraped.title[:50]} @ {scraped.company}"
+                            except Exception as e:
+                                yield f"  ✗ skipped one job: {str(e)[:80]}"
                                 continue
-                            job, created = get_or_create_job(scraped, direction=req.direction or None)
-                            if created:
-                                try:
-                                    with get_session() as session:
-                                        raw = RawJob(
-                                            canonical_id=job.id,
-                                            source=scraped.source,
-                                            source_job_id=scraped.source_job_id,
-                                            url=scraped.url,
-                                            raw_html=scraped.raw_html,
-                                            raw_json=scraped.raw_json,
-                                        )
-                                        session.add(raw)
-                                except Exception:
-                                    pass
-                                new_count += 1
-                                yield f"  + [{source_name}] {scraped.title[:50]} @ {scraped.company}"
-                        except Exception as e:
-                            yield f"  ✗ skipped one job: {str(e)[:80]}"
-                            continue
-            except Exception as e:
-                total_new += new_count
-                partial = f", saved {new_count} before failure" if new_count else ""
-                yield f"✗ {source_name} failed{partial}: {str(e)[:120]}"
-                continue
+                except Exception as e:
+                    total_new += new_count
+                    partial = f", saved {new_count} before failure" if new_count else ""
+                    yield f"✗ {source_name} failed{partial}: {str(e)[:120]}"
+                    continue
 
-            if found_count == 0:
-                yield f"✓ {source_name}: +0 new jobs (scraper returned 0 results)"
-            elif new_count == 0:
-                yield f"✓ {source_name}: +0 new jobs ({found_count} found, all duplicates)"
-            else:
-                yield f"✓ {source_name}: +{new_count} new jobs"
-            total_new += new_count
+                if found_count == 0:
+                    yield f"✓ {source_name}: +0 new jobs (scraper returned 0 results)"
+                elif new_count == 0:
+                    yield f"✓ {source_name}: +0 new jobs ({found_count} found, all duplicates)"
+                else:
+                    yield f"✓ {source_name}: +{new_count} new jobs"
+                total_new += new_count
 
         yield f"✓ Done — {total_new} total new jobs"
     return await sse(gen())
@@ -466,7 +475,7 @@ async def run_analyze(req: AnalyzeRequest):
         with get_session() as session:
             statuses = list(JobStatus)  # all statuses when rescoring
             if req.skip_scored:
-                statuses = [JobStatus.NEW, JobStatus.ANALYZED, JobStatus.SHORTLISTED, JobStatus.VIEWED]
+                statuses = [JobStatus.NEW, JobStatus.ANALYZED, JobStatus.SHORTLISTED, JobStatus.VIEWED, JobStatus.CONSIDERING]
             query = session.query(Job).filter(Job.status.in_(statuses))
             if req.direction:
                 query = query.filter(Job.direction == req.direction)
