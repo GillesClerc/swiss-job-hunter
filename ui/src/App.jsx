@@ -471,8 +471,9 @@ export default function App() {
   const [direction, setDirection] = useState("all");
   const [directions, setDirections] = useState(DIRECTIONS_FALLBACK);
   const [mainTab, setMainTab] = useState("board");   // board | tracker
-  const [rightTab, setRightTab] = useState("detail"); // detail | timeline | apply
+  const [rightTab, setRightTab] = useState("detail"); // detail | company | timeline | apply | tailor
   const [applyModal, setApplyModal] = useState(false);
+  const [tailorResult, setTailorResult] = useState(null);
   const [translatedDesc, setTranslatedDesc] = useState("");
   const [translating, setTranslating] = useState(false);
   const [showOriginalDesc, setShowOriginalDesc] = useState(false);
@@ -644,6 +645,21 @@ export default function App() {
       addLog(`✓ Cover letter generated`);
     } catch(e) { addLog(`✗ ${e.message}`); }
     setLoading(p=>({...p,cover:false}));
+  };
+
+  const tailorCv = async (job) => {
+    setLoading(p=>({...p, tailor:true}));
+    setTailorResult(null);
+    try {
+      const r = await fetch(`${API}/run/tailor-cv`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({job_id: job.id, direction: direction==="all"?null:direction}),
+      });
+      const d = await r.json();
+      if (d.error) { addLog(`✗ Tailor CV: ${d.error}`); }
+      else { setTailorResult(d); setRightTab("tailor"); addLog("✓ CV tailoring done"); }
+    } catch(e) { addLog(`✗ ${e.message}`); }
+    setLoading(p=>({...p, tailor:false}));
   };
 
   const deleteJob = async (jobId) => {
@@ -1031,6 +1047,7 @@ export default function App() {
                   <RTab id="company" label="COMPANY"/>
                   <RTab id="timeline" label="TIMELINE"/>
                   <RTab id="apply" label="APPLY"/>
+                  <RTab id="tailor" label="TAILOR"/>
                 </div>
 
                 {/* DETAIL TAB */}
@@ -1109,6 +1126,8 @@ export default function App() {
                           }}>↗ OPEN ORIGINAL LISTING</a>
                           <Btn onClick={()=>generateCover(selected)} loading={loading.cover}
                             label="GENERATE COVER LETTER" icon="✍" color="#a78bfa"/>
+                          <Btn onClick={()=>tailorCv(selected)} loading={loading.tailor}
+                            disabled={!selected?.description} label="TAILOR CV FOR THIS JD" icon="📝" color="#f59e0b"/>
                         </div>
 
                         <div>
@@ -1184,6 +1203,89 @@ export default function App() {
                         <div style={{fontSize:12,fontWeight:700,color:"#1a2e20",marginBottom:2}}>{selected.title}</div>
                         <div style={{fontSize:10,color:"#5a7a68",marginBottom:16}}>{selected.company}</div>
                         <Timeline jobId={selected.id} onRefresh={()=>{fetchJobs();fetchStats();}}/>
+                      </>
+                    }
+                  </div>
+                )}
+
+                {/* TAILOR TAB */}
+                {rightTab==="tailor" && (
+                  <div style={{flex:1,overflowY:"auto",padding:18,display:"flex",flexDirection:"column",gap:14}}>
+                    {!selected
+                      ? <div style={{color:"#d4dece",fontSize:12,textAlign:"center",marginTop:50}}>← select a job first</div>
+                      : !tailorResult
+                      ? <div style={{display:"flex",flexDirection:"column",gap:10,alignItems:"center",marginTop:40}}>
+                          <div style={{fontSize:11,color:"#5a7a68",textAlign:"center"}}>
+                            Generate tailored suggestions for<br/>
+                            <strong style={{color:"#1a2e20"}}>{selected.title}</strong>
+                          </div>
+                          <Btn onClick={()=>tailorCv(selected)} loading={loading.tailor}
+                            disabled={!selected.description} label="TAILOR CV FOR THIS JD" icon="📝" color="#f59e0b"/>
+                          {!selected.description && <div style={{fontSize:9,color:"#f59e0b"}}>run Enrich first to get full JD</div>}
+                        </div>
+                      : <>
+                        {/* Missing keywords */}
+                        {tailorResult.missing_keywords?.length > 0 && (
+                          <div>
+                            <div style={{fontSize:9,fontWeight:700,color:"#5a7a68",letterSpacing:"0.1em",marginBottom:6}}>MISSING KEYWORDS TO ADD</div>
+                            <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                              {tailorResult.missing_keywords.map((kw,i)=>(
+                                <span key={i} style={{fontSize:9,padding:"2px 7px",borderRadius:10,
+                                  background:"#fef3c7",color:"#92400e",border:"1px solid #f59e0b40"}}>
+                                  {kw}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Suggestions */}
+                        {tailorResult.suggestions?.length > 0 && (
+                          <div>
+                            <div style={{fontSize:9,fontWeight:700,color:"#5a7a68",letterSpacing:"0.1em",marginBottom:8}}>SUGGESTED REWRITES</div>
+                            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                              {tailorResult.suggestions.map((s,i)=>(
+                                <div key={i} style={{background:"#e2e8dc",borderRadius:5,padding:"10px 12px",
+                                  border:"1px solid #d4dece",fontSize:10}}>
+                                  <div style={{fontWeight:700,color:"#2e7d52",marginBottom:5,fontSize:9,letterSpacing:"0.05em"}}>
+                                    {s.section}
+                                  </div>
+                                  <div style={{color:"#708878",marginBottom:4,textDecoration:"line-through",opacity:0.7}}>
+                                    {s.original}
+                                  </div>
+                                  <div style={{color:"#1a2e20",marginBottom:5,lineHeight:1.5}}>
+                                    → {s.rewrite}
+                                  </div>
+                                  <div style={{fontSize:9,color:"#f59e0b",fontStyle:"italic"}}>
+                                    {s.reason}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* ATS plain text CV */}
+                        {tailorResult.ats_cv && (
+                          <div>
+                            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                              <div style={{fontSize:9,fontWeight:700,color:"#5a7a68",letterSpacing:"0.1em"}}>ATS PLAIN TEXT CV</div>
+                              <button onClick={()=>{navigator.clipboard.writeText(tailorResult.ats_cv);addLog("✓ ATS CV copied");}}
+                                style={{marginLeft:"auto",fontSize:9,padding:"2px 8px",borderRadius:3,
+                                  border:"1px solid #2e7d5230",background:"#2e7d5210",color:"#2e7d52",
+                                  cursor:"pointer",fontFamily:"monospace",fontWeight:700}}>
+                                ⎘ COPY
+                              </button>
+                            </div>
+                            <textarea readOnly value={tailorResult.ats_cv}
+                              style={{width:"100%",minHeight:300,background:"#e2e8dc",border:"1px solid #d4dece",
+                                borderRadius:5,padding:"10px 12px",color:"#708878",fontSize:10,
+                                lineHeight:1.7,fontFamily:"monospace",boxSizing:"border-box",resize:"vertical"}}/>
+                          </div>
+                        )}
+
+                        <Btn onClick={()=>tailorCv(selected)} loading={loading.tailor}
+                          label="REGENERATE" icon="↻" color="#f59e0b"/>
                       </>
                     }
                   </div>

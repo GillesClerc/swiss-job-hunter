@@ -787,6 +787,30 @@ async def run_cover(req: CoverRequest):
     return {"letter": letter}
 
 
+class TailorCVRequest(BaseModel):
+    job_id: int
+    direction: Optional[str] = None
+
+
+@app.post("/run/tailor-cv")
+async def run_tailor_cv(req: TailorCVRequest):
+    from analyzer.scorer import load_cv_text
+    from llm.cv_tailor import tailor_cv
+    from db.models import Job
+    from db.session import get_session
+
+    with get_session() as session:
+        job = session.get(Job, req.job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        direction = req.direction or job.direction or None
+        session.expunge(job)
+
+    cv_text = load_cv_text(direction=direction)
+    result = await tailor_cv(job, cv_text)
+    return result
+
+
 class ApplyEmailRequest(BaseModel):
     job_id: int
     cover_letter: str
