@@ -1265,25 +1265,6 @@ export default function App() {
                           </div>
                         )}
 
-                        {/* ATS plain text CV */}
-                        {tailorResult.ats_cv && (
-                          <div>
-                            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-                              <div style={{fontSize:9,fontWeight:700,color:"#5a7a68",letterSpacing:"0.1em"}}>ATS PLAIN TEXT CV</div>
-                              <button onClick={()=>{navigator.clipboard.writeText(tailorResult.ats_cv);addLog("✓ ATS CV copied");}}
-                                style={{marginLeft:"auto",fontSize:9,padding:"2px 8px",borderRadius:3,
-                                  border:"1px solid #2e7d5230",background:"#2e7d5210",color:"#2e7d52",
-                                  cursor:"pointer",fontFamily:"monospace",fontWeight:700}}>
-                                ⎘ COPY
-                              </button>
-                            </div>
-                            <textarea readOnly value={tailorResult.ats_cv}
-                              style={{width:"100%",minHeight:300,background:"#e2e8dc",border:"1px solid #d4dece",
-                                borderRadius:5,padding:"10px 12px",color:"#708878",fontSize:10,
-                                lineHeight:1.7,fontFamily:"monospace",boxSizing:"border-box",resize:"vertical"}}/>
-                          </div>
-                        )}
-
                         <Btn onClick={()=>tailorCv(selected)} loading={loading.tailor}
                           label="REGENERATE" icon="↻" color="#f59e0b"/>
                       </>
