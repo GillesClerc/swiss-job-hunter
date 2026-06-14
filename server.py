@@ -1002,7 +1002,7 @@ def get_tracker():
     from db.session import get_session
     from db.models import Job, JobStatus, Application
     active_statuses = [
-        JobStatus.VIEWED, JobStatus.APPLIED,
+        JobStatus.VIEWED, JobStatus.CONSIDERING, JobStatus.APPLIED,
         JobStatus.INTERVIEWING, JobStatus.OFFER,
         JobStatus.REJECTED,
     ]
