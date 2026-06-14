@@ -265,28 +265,7 @@ sjh digest
 
 ## Architecture
 
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│   scrapers/ │────▶│  dedup/      │────▶│  db/        │
-│  8 sources  │     │  exact +     │     │  SQLite     │
-│  httpx +    │     │  semantic    │     │  jobs.db    │
-│  playwright │     └──────────────┘     └──────┬──────┘
-└─────────────┘                                 │
-                                                ▼
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│  ui/        │◀───▶│  server.py   │────▶│  analyzer/  │
-│  React +    │     │  FastAPI     │     │  scorer.py  │
-│  Vite       │     │  SSE stream  │     │  keyword +  │
-└─────────────┘     └──────────────┘     │  LLM        │
-                                         └──────┬──────┘
-                                                │
-                                         ┌──────▼──────┐
-                                         │  llm/       │
-                                         │  router.py  │
-                                         │  Claude /   │
-                                         │  DeepSeek   │
-                                         └─────────────┘
-```
+![Architecture](docs/architecture.png)
 
 ### Tech Stack
 
