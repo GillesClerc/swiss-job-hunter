@@ -10,7 +10,7 @@
 
 [Features](#features) · [Quick Start](#quick-start) · [UI](#ui) · [Multi-Direction](#multi-direction-search) · [Architecture](#architecture)
 
-<video src="docs/SwissJobHunter_demo.mp4" controls width="100%"></video>
+<video src="https://github.com/user-attachments/assets/7931b4e7-3125-4bed-aeba-bbb13644e31e" controls width="100%"></video>
 
 ![Swiss Job Hunter — Job Board](docs/screenshot_main.png)
 
