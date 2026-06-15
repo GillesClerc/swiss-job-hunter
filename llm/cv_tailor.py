@@ -117,7 +117,7 @@ Rules:
 - suggestions: 3-6 most impactful changes only
 - Do NOT invent experience or skills the candidate doesn't have"""
 
-    raw, provider = await call_llm(user=user, system=system, max_tokens=1500)
+    raw, provider = await call_llm(user=user, system=system, max_tokens=2500)
     print(f"[cv_tailor] generated via {provider}")
 
     raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
@@ -128,4 +128,12 @@ Rules:
     try:
         return json.loads(m.group(0))
     except json.JSONDecodeError as e:
-        return {"error": f"JSON parse error: {e}", "raw": raw[:500]}
+        # Response was likely truncated — try closing open structures
+        fixed = m.group(0).rstrip().rstrip(",")
+        open_brackets = fixed.count("[") - fixed.count("]")
+        open_braces = fixed.count("{") - fixed.count("}")
+        fixed += "]" * max(0, open_brackets) + "}" * max(0, open_braces)
+        try:
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            return {"error": f"JSON parse error: {e}", "raw": raw[:500]}
