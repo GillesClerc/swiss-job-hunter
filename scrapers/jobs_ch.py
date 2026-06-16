@@ -5,6 +5,7 @@ Uses their public JSON API (no authentication required).
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import AsyncGenerator, Optional
 from urllib.parse import urlencode
@@ -13,6 +14,7 @@ from scrapers.base import BaseScraper, ScrapedJob
 
 # jobs.ch internal API endpoint (reverse-engineered from XHR)
 _API_BASE = "https://www.jobs.ch/api/v1/public/search/"
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
 _PAGE_SIZE = 20
 
 
@@ -83,7 +85,10 @@ class JobsChScraper(BaseScraper):
 
             slug = doc.get("slug", "")
             job_id = doc.get("job_id", doc.get("datapool_id", ""))
-            job_url = f"https://www.jobs.ch/en/vacancies/detail/{slug}/" if slug else ""
+            # slug sometimes has job title appended after the UUID; strip it
+            m = _UUID_RE.search(slug)
+            clean_id = m.group(0) if m else (slug or job_id)
+            job_url = f"https://www.jobs.ch/en/vacancies/detail/{clean_id}/" if clean_id else ""
 
             # employment_grades is a list of percentages e.g. [80, 85, 90, 95, 100]
             salary_raw: Optional[str] = None
