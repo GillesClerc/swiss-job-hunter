@@ -1,75 +1,77 @@
-"""Tests for LinkedIn RSS scraper — no network calls."""
+"""Tests for LinkedIn scraper (guest HTML API) — no network calls."""
 import pytest
+from bs4 import BeautifulSoup
 from scrapers.linkedin_rss import LinkedInRssScraper
 
-RSS_SAMPLE = """<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <title>LinkedIn Jobs</title>
-    <item>
-      <title>Senior ML Engineer - Google - Zürich, Switzerland</title>
-      <link>https://www.linkedin.com/jobs/view/1234567890/?trk=rss</link>
-      <guid>https://www.linkedin.com/jobs/view/1234567890/</guid>
-      <pubDate>Mon, 06 Jan 2025 10:00:00 +0000</pubDate>
-      <description>&lt;p&gt;Join our AI team in Zürich.&lt;/p&gt;</description>
-    </item>
-    <item>
-      <title>Data Scientist at Swiss Re (Zürich)</title>
-      <link>https://www.linkedin.com/jobs/view/9876543210/?trk=rss</link>
-      <guid>https://www.linkedin.com/jobs/view/9876543210/</guid>
-      <pubDate>Tue, 07 Jan 2025 09:00:00 +0000</pubDate>
-      <description>&lt;p&gt;Exciting data science role.&lt;/p&gt;</description>
-    </item>
-  </channel>
-</rss>"""
+# Minimal card matching the selectors used in _parse_card
+_CARD_FULL = """<li>
+  <a class="base-card__full-link"
+     href="/jobs/view/Senior-ML-Engineer-Google-1234567890/?trk=rss&amp;refId=xyz"></a>
+  <h3 class="base-search-card__title">Senior ML Engineer</h3>
+  <h4 class="base-search-card__subtitle">Google</h4>
+  <span class="job-search-card__location">Zürich, Switzerland</span>
+  <time datetime="2025-01-06"></time>
+</li>"""
+
+_CARD_NO_TITLE = """<li>
+  <h4 class="base-search-card__subtitle">Google</h4>
+</li>"""
+
+_CARD_NO_COMPANY = """<li>
+  <a class="base-card__full-link" href="/jobs/view/ML-Engineer-1111111111/"></a>
+  <h3 class="base-search-card__title">ML Engineer</h3>
+</li>"""
+
+_PAGE = f"""<html><body><ul>
+{_CARD_FULL}
+<li>
+  <a class="base-card__full-link" href="/jobs/view/Data-Scientist-Swiss-Re-9876543210/"></a>
+  <h3 class="base-search-card__title">Data Scientist</h3>
+  <h4 class="base-search-card__subtitle">Swiss Re</h4>
+  <span class="job-search-card__location">Basel, Switzerland</span>
+</li>
+</ul></body></html>"""
 
 
-def test_split_title_dash_format():
-    s = LinkedInRssScraper()
-    title, company, location = s._split_title("Senior ML Engineer - Google - Zürich, Switzerland")
-    assert title == "Senior ML Engineer"
-    assert company == "Google"
-    assert location == "Zürich, Switzerland"
+def _card(html: str):
+    return BeautifulSoup(html, "lxml").select_one("li")
 
 
-def test_split_title_at_format():
-    s = LinkedInRssScraper()
-    title, company, location = s._split_title("Data Scientist at Swiss Re (Zürich)")
-    assert title == "Data Scientist"
-    assert company == "Swiss Re"
-    assert location == "Zürich"
+def test_parse_card_returns_job():
+    job = LinkedInRssScraper()._parse_card(_card(_CARD_FULL))
+    assert job is not None
+    assert job.title == "Senior ML Engineer"
+    assert job.company == "Google"
+    assert "Zürich" in job.location
+    assert job.source == "linkedin.com"
+    assert job.source_job_id == "1234567890"
+    assert job.url == "https://www.linkedin.com/jobs/view/1234567890/"
 
 
-def test_split_title_no_company():
-    s = LinkedInRssScraper()
-    title, company, location = s._split_title("ML Engineer")
-    assert title == "ML Engineer"
-    assert company == "Unknown"
-    assert location == "Switzerland"
+def test_parse_card_url_strips_slug_and_tracking():
+    job = LinkedInRssScraper()._parse_card(_card(_CARD_FULL))
+    assert job is not None
+    assert "trk" not in job.url
+    assert "refId" not in job.url
+    assert job.url == "https://www.linkedin.com/jobs/view/1234567890/"
 
 
-def test_clean_url_strips_tracking():
-    url = "https://www.linkedin.com/jobs/view/1234567890/?trk=rss&refId=abc123"
-    cleaned = LinkedInRssScraper._clean_url(url)
-    assert cleaned == "https://www.linkedin.com/jobs/view/1234567890/"
-    assert "trk" not in cleaned
+def test_parse_card_missing_title_returns_none():
+    job = LinkedInRssScraper()._parse_card(_card(_CARD_NO_TITLE))
+    assert job is None
 
 
-def test_parse_rss_full():
-    s = LinkedInRssScraper()
-    jobs = s._parse_rss(RSS_SAMPLE)
+def test_parse_card_missing_company_defaults():
+    job = LinkedInRssScraper()._parse_card(_card(_CARD_NO_COMPANY))
+    assert job is not None
+    assert job.company == "Unknown"
+    assert job.location == "Switzerland"
+
+
+def test_parse_page_returns_multiple_jobs():
+    jobs = LinkedInRssScraper()._parse_page(_PAGE)
     assert len(jobs) == 2
-
-    j0 = jobs[0]
-    assert j0.title == "Senior ML Engineer"
-    assert j0.company == "Google"
-    assert "Zürich" in j0.location
-    assert j0.source == "linkedin.com"
-    assert j0.source_job_id == "1234567890"
-    assert j0.url == "https://www.linkedin.com/jobs/view/1234567890/"
-    assert "Zürich" in j0.description
-
-    j1 = jobs[1]
-    assert j1.title == "Data Scientist"
-    assert j1.company == "Swiss Re"
-    assert j1.source_job_id == "9876543210"
+    assert jobs[0].title == "Senior ML Engineer"
+    assert jobs[0].source_job_id == "1234567890"
+    assert jobs[1].title == "Data Scientist"
+    assert jobs[1].source_job_id == "9876543210"

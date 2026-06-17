@@ -9,7 +9,7 @@ def test_normalize_lowercases():
 
 
 def test_normalize_strips_punctuation():
-    assert _normalize("C++ Developer") == "c  developer"
+    assert _normalize("C++ Developer") == "c developer"
 
 
 def test_dedup_hash_stable():
@@ -27,13 +27,13 @@ def test_dedup_hash_different_company():
 def test_scorer_fast_empty_jd():
     from analyzer.scorer import fast_score
     result = fast_score("Python developer with PyTorch", "")
-    assert result.score == 0.5  # unknown match
+    assert result.score == 0.0  # too short → unknown
 
 
 def test_scorer_fast_full_match():
     from analyzer.scorer import fast_score
     cv = "Expert in Python, PyTorch, computer vision, radar sensor fusion"
-    jd = "Requirements: python, pytorch, computer vision"
+    jd = "Requirements: python, pytorch, computer vision experience needed for this senior role"
     result = fast_score(cv, jd)
     assert result.score == pytest.approx(1.0)
     assert len(result.matched_skills) >= 2
