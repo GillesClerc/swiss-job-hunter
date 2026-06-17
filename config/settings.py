@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # Example in .env:
     #   KEYWORD_PRESETS={"agent": ["AI engineer", "LLM engineer"], "devops": ["DevOps engineer", "SRE"]}
     keyword_presets: dict[str, list[str]] = Field(
-        default={
+        default_factory=lambda: {
             "perception": [
                 "computer vision engineer", "ADAS engineer", "sensor fusion engineer",
                 "autonomous driving engineer", "robotics engineer", "perception engineer",

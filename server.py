@@ -58,6 +58,12 @@ def get_config():
     }
 
 
+@app.get("/presets")
+def get_presets():
+    """Return keyword presets configured via KEYWORD_PRESETS in .env."""
+    from config.settings import Settings
+    return Settings().keyword_presets
+
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
 def get_jobs_query(status: str = "all", q: str = "", direction: str = "all", min_stars: int = 0):
