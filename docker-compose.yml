@@ -18,6 +18,10 @@ services:
       - ./data:/app/data
       # Named volume: cache the MiniLM embedding model across recreations.
       - hf-cache:/app/.cache/huggingface
+    # Allows the container to reach Ollama running on the host (Linux requires this;
+    # Mac and Windows Docker Desktop provide host.docker.internal automatically).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8765/config"]
