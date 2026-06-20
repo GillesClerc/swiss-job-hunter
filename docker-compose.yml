@@ -6,12 +6,15 @@ services:
       - sjh-data:/app/data
       - hf-cache:/app/.cache/huggingface
     restart: unless-stopped
+    labels:
+      - "traefik.http.middlewares.sjh-auth.basicauth.users=${BASIC_AUTH}"
+      - "traefik.http.routers.backend.middlewares=sjh-auth"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8765/config"]
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 120s     # 1er boot = téléchargement du modèle MiniLM
+      start_period: 120s
 
   frontend:
     build:
@@ -21,6 +24,9 @@ services:
     expose: ["80"]
     depends_on: [backend]
     restart: unless-stopped
+    labels:
+      - "traefik.http.middlewares.sjh-auth.basicauth.users=${BASIC_AUTH}"
+      - "traefik.http.routers.frontend.middlewares=sjh-auth"
 
 volumes:
   sjh-data: {}
