@@ -649,6 +649,7 @@ async def run_enrich(req: EnrichRequest):
                         job = session.get(Job, job_id)
                         if job:
                             job.match_score = result.score
+                            job.match_explanation = result.explanation
                             if result.score < 0.1:
                                 job.status = JobStatus.ARCHIVED
                             elif result.score >= 0.6:
