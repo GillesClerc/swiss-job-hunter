@@ -475,6 +475,17 @@ export default function App() {
   const [showOriginalDesc, setShowOriginalDesc] = useState(false);
   const [companyCache, setCompanyCache] = useState({});  // name → summary
   const [lookingUpCompany, setLookingUpCompany] = useState(false);
+  // ── CV flow ──────────────────────────────────────────────────────────────────
+  const [cvCategories, setCvCategories] = useState([]);   // [{direction, keywords, job_count}]
+  const [importing, setImporting] = useState(false);
+  const [importName, setImportName] = useState("");
+  const [importContent, setImportContent] = useState("");
+  const [extractingKw, setExtractingKw] = useState(false);
+  const [renaming, setRenaming] = useState(null);          // direction being renamed
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [newSinceId, setNewSinceId] = useState(null);      // highlight only jobs with id > this
+  const fileInputRef = useRef();
+  const kwSaveTimer = useRef();
 
   const addLog = useCallback(l => setLog(p=>[...p.slice(-300),l]),[]);
 
@@ -634,6 +645,142 @@ export default function App() {
     }
   }, [searchKws, searchKwInput, searchSrc, searchLoc, searchPages, direction, linkedinTimeRange, linkedinExpLevel, threshold, runStream, addLog]);
 
+  // ── CV flow ────────────────────────────────────────────────────────────────
+  const loadCategories = useCallback(async () => {
+    try { const r = await fetch(`${API}/cv-categories`); if (r.ok) setCvCategories(await r.json()); } catch {}
+  }, []);
+
+  useEffect(() => { loadCategories(); }, [loadCategories]);
+
+  const refreshDirections = useCallback(() => {
+    fetch(`${API}/directions`).then(r=>r.ok?r.json():null)
+      .then(dirs=>setDirections(dirs && dirs.length ? dirs : DIRECTIONS_FALLBACK)).catch(()=>{});
+  }, []);
+
+  const selectCategory = useCallback((cat) => {
+    setDirection(cat.direction);
+    setSearchKws(cat.keywords || []);
+    setSearchKwInput("");
+    setNewSinceId(null);
+  }, []);
+
+  // Persist keyword edits back into the selected CV category (debounced).
+  useEffect(() => {
+    if (direction === "all") return;
+    if (kwSaveTimer.current) clearTimeout(kwSaveTimer.current);
+    kwSaveTimer.current = setTimeout(() => {
+      fetch(`${API}/cv/${direction}/search-keywords`, {
+        method:"PUT", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ keywords: searchKws }),
+      }).then(r => r.ok ? loadCategories() : null).catch(()=>{});
+    }, 800);
+    return () => { if (kwSaveTimer.current) clearTimeout(kwSaveTimer.current); };
+  }, [searchKws, direction, loadCategories]);
+
+  const onFilePicked = async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    const text = await f.text();
+    setImportName(f.name.replace(/\.txt$/i, "").replace(/^cv[_-]?/i, ""));
+    setImportContent(text);
+    setImporting(true);
+  };
+
+  const confirmImport = async () => {
+    try {
+      const r = await fetch(`${API}/cv/upload`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ direction: importName, content: importContent }),
+      });
+      if (!r.ok) { addLog(`✗ Import failed: ${(await r.text()).slice(0,80)}`); return; }
+      const d = await r.json();
+      addLog(`✓ CV imported as "${d.direction}"`);
+      setImporting(false); setImportContent("");
+      await loadCategories(); refreshDirections();
+      setDirection(d.direction); setSearchKws([]); setSearchKwInput("");
+    } catch (e) { addLog(`✗ ${e.message}`); }
+  };
+
+  const extractKeywords = async () => {
+    if (direction === "all") { addLog("✗ Select a CV category first"); return; }
+    setExtractingKw(true);
+    try {
+      const r = await fetch(`${API}/cv/${direction}/search-keywords/extract`, { method:"POST" });
+      if (!r.ok) { addLog(`✗ Extract failed: ${(await r.text()).slice(0,100)}`); }
+      else {
+        const d = await r.json();
+        setSearchKws(d.keywords); setSearchKwInput("");
+        addLog(`✓ Extracted ${d.keywords.length} search keywords`);
+        loadCategories();
+      }
+    } catch (e) { addLog(`✗ ${e.message}`); }
+    setExtractingKw(false);
+  };
+
+  const renameCategory = async (dir, raw) => {
+    const newName = (raw || "").trim();
+    setRenaming(null);
+    if (!newName || newName === dir) return;
+    try {
+      const r = await fetch(`${API}/cv-categories/${dir}`, {
+        method:"PATCH", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ new_name: newName }),
+      });
+      if (!r.ok) { addLog(`✗ Rename failed: ${(await r.text()).slice(0,80)}`); return; }
+      const d = await r.json();
+      addLog(`✓ Renamed "${dir}" → "${d.direction}"`);
+      if (direction === dir) setDirection(d.direction);
+      await loadCategories(); refreshDirections();
+    } catch (e) { addLog(`✗ ${e.message}`); }
+  };
+
+  const deleteCategory = async (dir) => {
+    try {
+      const r = await fetch(`${API}/cv-categories/${dir}`, { method:"DELETE" });
+      if (!r.ok) { addLog(`✗ Delete failed: ${(await r.text()).slice(0,80)}`); return; }
+      addLog(`✓ Deleted category "${dir}" (jobs kept, untagged)`);
+      if (direction === dir) { setDirection("all"); setSearchKws([]); }
+      await loadCategories(); refreshDirections();
+    } catch (e) { addLog(`✗ ${e.message}`); }
+  };
+
+  const currentKeywords = useCallback(() =>
+    searchKwInput.trim() ? [...searchKws, searchKwInput.trim()] : searchKws, [searchKws, searchKwInput]);
+
+  const scrape = useCallback(() => {
+    const kws = currentKeywords();
+    if (!kws.length) { addLog("✗ No keywords — extract from a CV or add some first"); return Promise.resolve(); }
+    if (direction !== "all") {
+      fetch(`${API}/cv/${direction}/search-keywords`, {
+        method:"PUT", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ keywords: kws }),
+      }).then(loadCategories).catch(()=>{});
+    }
+    return runStream("run/search", {
+      keywords:kws, keyword:kws[0]||"", location:searchLoc, sources:searchSrc, pages:searchPages,
+      semantic:false, direction: direction==="all"?null:direction,
+      linkedin_time_range:linkedinTimeRange, linkedin_experience_level:linkedinExpLevel,
+    }, "search");
+  }, [currentKeywords, direction, searchLoc, searchSrc, searchPages, linkedinTimeRange, linkedinExpLevel, runStream, addLog, loadCategories]);
+
+  const ENRICHABLE = ["jobs.ch","jobscout24.ch","swissdevjobs.ch","züri.jobs","efinancialcareers.ch","jobup.ch","linkedin.com","michael-page.ch"];
+
+  const enrichScore = useCallback(() => {
+    const dir = direction==="all"?null:direction;
+    const sources = searchSrc.filter(s => ENRICHABLE.includes(s));
+    const list = sources.length ? sources : [searchSrc[0] || "jobs.ch"];
+    list.forEach(src => runStream("run/enrich", {limit:9999, source:src, rescore_llm:true, direction:dir}, `enrich-llm-${src}`));
+  }, [direction, searchSrc, runStream]);
+
+  const checkAgain = useCallback(async () => {
+    const baseId = jobs.reduce((m,j)=>Math.max(m, j.id), 0);
+    addLog("━━━ CHECK AGAIN ━━━");
+    await scrape();
+    setNewSinceId(baseId);
+    addLog("→ Showing only newly found jobs (clear the banner to see all)");
+  }, [jobs, scrape, addLog]);
+
   const generateCover = async (job) => {
     setLoading(p=>({...p,cover:true}));
     try {
@@ -682,7 +829,8 @@ export default function App() {
 
   const visible = jobs.filter(j=>
     (filterStatus==="all"||j.status===filterStatus) &&
-    (threshold===0 || (j.match_score!=null && j.match_score*100 >= threshold))
+    (threshold===0 || (j.match_score!=null && j.match_score*100 >= threshold)) &&
+    (newSinceId===null || j.id > newSinceId)
   );
 
   const Tab = ({id,label,active,onClick}) => (
@@ -764,168 +912,203 @@ export default function App() {
                 {/* Controls: scrollable, capped so Log stays visible */}
                 <div style={{overflowY:"auto",flexShrink:0,maxHeight:"65%"}}>
 
-                {/* Search */}
-                <div style={{padding:"6px 10px",borderBottom:"1px solid #d4dece"}}>
-                  <div style={{fontSize:9,color:"#5a7a68",letterSpacing:"0.12em",fontWeight:700,marginBottom:4}}>① SEARCH</div>
-                  <div style={{display:"flex",gap:3,marginBottom:4}}>
-                    {["all",...directions].map(d=>(
-                      <button key={d} onClick={()=>setDirection(d)} style={{
-                        flex:1,fontSize:8,padding:"2px 0",borderRadius:3,border:"1px solid",
-                        borderColor:direction===d?"#2e7d5240":"#d4dece",
-                        background:direction===d?"#2e7d5215":"transparent",
-                        color:direction===d?"#2e7d52":"#6b8c7a",
-                        cursor:"pointer",fontFamily:"monospace",fontWeight:700,letterSpacing:"0.05em",
-                      }}>{d.toUpperCase()}</button>
+                {/* ── CV FLOW ─────────────────────────────────────── */}
+                <div style={{padding:"8px 10px",borderBottom:"1px solid #d4dece"}}>
+                  <div style={{fontSize:9,color:"#5a7a68",letterSpacing:"0.12em",fontWeight:700,marginBottom:6}}>CV FLOW</div>
+
+                  {/* Category chips */}
+                  <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:7}}>
+                    {cvCategories.length===0 && <span style={{fontSize:9,color:"#6b8c7a",fontStyle:"italic"}}>no CV imported yet</span>}
+                    {cvCategories.map(cat=>(
+                      renaming===cat.direction
+                        ? <input key={cat.direction} autoFocus defaultValue={cat.direction}
+                            onKeyDown={e=>{if(e.key==="Enter")renameCategory(cat.direction,e.target.value);else if(e.key==="Escape")setRenaming(null);}}
+                            onBlur={e=>renameCategory(cat.direction,e.target.value)}
+                            style={{...inp,width:96,padding:"2px 5px",fontSize:9}}/>
+                        : <span key={cat.direction} style={{display:"inline-flex",alignItems:"center",gap:2,
+                            border:"1px solid",borderRadius:3,
+                            borderColor:direction===cat.direction?"#2e7d5240":"#d4dece",
+                            background:direction===cat.direction?"#2e7d5215":"transparent"}}>
+                            <button onClick={()=>selectCategory(cat)} title={`${cat.keywords.length} keywords · ${cat.job_count} jobs`} style={{
+                              border:"none",background:"none",cursor:"pointer",fontFamily:"monospace",fontWeight:700,
+                              fontSize:9,letterSpacing:"0.04em",padding:"3px 6px",
+                              color:direction===cat.direction?"#2e7d52":"#6b8c7a",
+                            }}>📄 {cat.direction.toUpperCase()} <span style={{opacity:0.55}}>·{cat.keywords.length}</span></button>
+                            {direction===cat.direction && <>
+                              <span onClick={()=>setRenaming(cat.direction)} title="Rename" style={{cursor:"pointer",fontSize:9,opacity:0.45,padding:"0 1px"}}>✎</span>
+                              <span onClick={()=>{if(window.confirm(`Delete category "${cat.direction}"? Jobs are kept but untagged.`))deleteCategory(cat.direction);}} title="Delete" style={{cursor:"pointer",fontSize:9,opacity:0.45,padding:"0 4px 0 1px"}}>🗑</span>
+                            </>}
+                          </span>
                     ))}
                   </div>
-                  {/* keyword presets */}
-                  <div style={{display:"flex",gap:3,marginBottom:4}}>
-                    {Object.entries(keywordPresets).map(([dir, kws])=>(
-                      <button key={dir} onClick={()=>{ setSearchKws(kws); setSearchKwInput(""); setDirection(dir); }} style={{
-                        flex:1,fontSize:8,padding:"3px 0",borderRadius:3,border:"1px solid #2e7d5230",
-                        background:"#2e7d5210",color:"#2e7d52",cursor:"pointer",
-                        fontFamily:"monospace",fontWeight:700,letterSpacing:"0.04em",
-                      }}>⚡ {dir.toUpperCase()}</button>
-                    ))}
+
+                  {/* Import CV */}
+                  <input ref={fileInputRef} type="file" accept=".txt,text/plain" style={{display:"none"}} onChange={onFilePicked}/>
+                  {importing
+                    ? <div style={{background:"#ffffff",border:"1px solid #c8d8c4",borderRadius:5,padding:8,marginBottom:6}}>
+                        <div style={{fontSize:9,color:"#5a7a68",marginBottom:4}}>Direction name for this CV:</div>
+                        <input value={importName} onChange={e=>setImportName(e.target.value)} placeholder="e.g. agent"
+                          style={{...inp,marginBottom:6,fontSize:10}}/>
+                        <div style={{display:"flex",gap:5,justifyContent:"flex-end"}}>
+                          <Btn onClick={()=>{setImporting(false);setImportContent("");}} label="Cancel" icon="✕" color="#6b8c7a" small/>
+                          <Btn onClick={confirmImport} label="Save CV" icon="✓" color="#2e7d52" small
+                            disabled={!importName.trim()||!importContent.trim()}/>
+                        </div>
+                      </div>
+                    : <Btn onClick={()=>fileInputRef.current?.click()} label="① IMPORT CV (.txt)" icon="⬆" color="#2e7d52"/>
+                  }
+
+                  {/* Extract keywords */}
+                  <div style={{marginTop:5}}>
+                    <Btn onClick={extractKeywords} loading={extractingKw} disabled={direction==="all"}
+                      label="② EXTRACT KEYWORDS (CLAUDE)" icon="🧠" color="#a78bfa"/>
                   </div>
-                  {/* keyword tags */}
-                  <div style={{display:"flex",flexWrap:"wrap",gap:3,marginBottom:3}}>
-                    {searchKws.map((kw,i)=>(
-                      <span key={i} style={{
-                        display:"inline-flex",alignItems:"center",gap:3,
-                        fontSize:9,padding:"2px 6px",borderRadius:3,
-                        background:"#2e7d5220",border:"1px solid #2e7d5240",color:"#2e7d52",
-                        fontFamily:"monospace",fontWeight:700,
-                      }}>
-                        {kw}
-                        <span onClick={()=>setSearchKws(p=>p.filter((_,j)=>j!==i))}
-                          style={{cursor:"pointer",fontWeight:900,opacity:0.6,lineHeight:1}}>×</span>
-                      </span>
-                    ))}
+
+                  {/* Keyword tags (editable) */}
+                  {(searchKws.length>0 || direction!=="all") && <>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:3,margin:"7px 0 3px"}}>
+                      {searchKws.map((kw,i)=>(
+                        <span key={i} style={{
+                          display:"inline-flex",alignItems:"center",gap:3,fontSize:9,padding:"2px 6px",borderRadius:3,
+                          background:"#2e7d5220",border:"1px solid #2e7d5240",color:"#2e7d52",fontFamily:"monospace",fontWeight:700,
+                        }}>{kw}<span onClick={()=>setSearchKws(p=>p.filter((_,j)=>j!==i))}
+                          style={{cursor:"pointer",fontWeight:900,opacity:0.6,lineHeight:1}}>×</span></span>
+                      ))}
+                    </div>
+                    <input value={searchKwInput}
+                      onChange={e=>{const v=e.target.value;if(v.endsWith(",")){const kw=v.slice(0,-1).trim();if(kw&&!searchKws.includes(kw))setSearchKws(p=>[...p,kw]);setSearchKwInput("");}else setSearchKwInput(v);}}
+                      onKeyDown={e=>{if(e.key==="Enter"){const kw=searchKwInput.trim();if(kw&&!searchKws.includes(kw))setSearchKws(p=>[...p,kw]);setSearchKwInput("");}else if(e.key==="Backspace"&&!searchKwInput&&searchKws.length>0)setSearchKws(p=>p.slice(0,-1));}}
+                      placeholder={searchKws.length?"add keyword (Enter/,)":"keyword (Enter to add)"}
+                      style={{...inp,marginBottom:6}}/>
+                  </>}
+
+                  {/* Actions */}
+                  <Btn onClick={scrape} loading={loading.search} disabled={!searchKws.length && !searchKwInput.trim()}
+                    label="③ SCRAPE" icon="⬇" color="#2e7d52"/>
+                  <div style={{marginTop:4}}>
+                    <Btn onClick={enrichScore}
+                      loading={Object.keys(loading).some(k=>k.startsWith("enrich-llm")&&loading[k])}
+                      disabled={!stats.total} label="④ ENRICH + LLM SCORE" icon="🧠" color="#a78bfa"/>
                   </div>
-                  <input value={searchKwInput}
-                    onChange={e=>{
-                      const v = e.target.value;
-                      if (v.endsWith(",")) {
-                        const kw = v.slice(0,-1).trim();
-                        if (kw && !searchKws.includes(kw)) setSearchKws(p=>[...p,kw]);
-                        setSearchKwInput("");
-                      } else {
-                        setSearchKwInput(v);
-                      }
-                    }}
-                    onKeyDown={e=>{
-                      if (e.key==="Enter") {
-                        const kw = searchKwInput.trim();
-                        if (kw && !searchKws.includes(kw)) setSearchKws(p=>[...p,kw]);
-                        setSearchKwInput("");
-                      } else if (e.key==="Backspace" && !searchKwInput && searchKws.length>0) {
-                        setSearchKws(p=>p.slice(0,-1));
-                      }
-                    }}
-                    placeholder={searchKws.length ? "add keyword (Enter/,)" : "keyword (Enter to add)"}
-                    style={{...inp,marginBottom:4}}/>
-                  <div style={{display:"flex",gap:5,marginBottom:4}}>
-                    <input value={searchLoc} onChange={e=>setSearchLoc(e.target.value)}
-                      placeholder="city (blank = all CH)" style={{...inp,flex:1}}/>
-                    <button onClick={()=>setSearchLoc("")} title="Search all Switzerland" style={{
-                      padding:"4px 7px",borderRadius:4,border:"1px solid",
-                      borderColor:searchLoc===""?"#2e7d5240":"#d4dece",
-                      background:searchLoc===""?"#2e7d5215":"transparent",
-                      color:searchLoc===""?"#2e7d52":"#6b8c7a",
-                      fontSize:9,fontWeight:700,fontFamily:"monospace",cursor:"pointer",whiteSpace:"nowrap",
-                    }}>ALL CH</button>
-                    <input type="number" min={1} max={40} value={searchPages}
-                      onChange={e=>setSearchPages(Math.max(1,parseInt(e.target.value)||1))}
-                      title="pages per source" style={{...inp,width:64,textAlign:"center"}}/>
+                  <div style={{marginTop:4}}>
+                    <Btn onClick={checkAgain} loading={loading.search}
+                      disabled={!searchKws.length && !searchKwInput.trim()}
+                      label="LET'S CHECK AGAIN" icon="🔄" color="#6366f1"/>
                   </div>
-                  <div style={{display:"flex",flexWrap:"wrap",gap:3,marginBottom:5}}>
-                    <button onClick={()=>setSearchSrc(searchSrc.length===SOURCES.length?[]:SOURCES)} style={{
-                      fontSize:8,padding:"2px 6px",borderRadius:3,border:"1px solid",
-                      borderColor:searchSrc.length===SOURCES.length?"#2e7d5240":"#d4dece",
-                      background:searchSrc.length===SOURCES.length?"#2e7d5215":"transparent",
-                      color:searchSrc.length===SOURCES.length?"#2e7d52":"#6b8c7a",
-                      cursor:"pointer",letterSpacing:"0.04em",fontFamily:"monospace",fontWeight:700,
-                    }}>ALL</button>
-                    {SOURCES.map(s=>(
-                      <button key={s} onClick={()=>setSearchSrc(p=>p.includes(s)?p.filter(x=>x!==s):[...p,s])} style={{
-                        fontSize:8,padding:"2px 6px",borderRadius:3,border:"1px solid",
-                        borderColor:searchSrc.includes(s)?"#2e7d5240":"#d4dece",
-                        background:searchSrc.includes(s)?"#2e7d5215":"transparent",
-                        color:searchSrc.includes(s)?"#2e7d52":"#6b8c7a",
-                        cursor:"pointer",letterSpacing:"0.04em",fontFamily:"monospace",
-                      }}>{s.replace(/\.(ch|com)/,"")}</button>
-                    ))}
-                  </div>
-                  {searchSrc.includes("linkedin.com") && (<>
-                    <select value={linkedinTimeRange} onChange={e=>setLinkedinTimeRange(e.target.value)}
-                      style={{...inp,marginBottom:0,fontSize:9,color:"#4a6a58"}}>
-                      <option value="r86400">LinkedIn · 24h</option>
-                      <option value="r604800">LinkedIn · 7 days</option>
-                      <option value="r2592000">LinkedIn · 30 days</option>
-                    </select>
-                    <select value={linkedinExpLevel} onChange={e=>setLinkedinExpLevel(e.target.value)}
-                      style={{...inp,marginBottom:0,fontSize:9,color:"#4a6a58"}}>
-                      <option value="2,3,4">LinkedIn · Entry–Senior</option>
-                      <option value="3,4">LinkedIn · Associate–Senior</option>
-                      <option value="4">LinkedIn · Senior only</option>
-                      <option value="4,5">LinkedIn · Senior–Director</option>
-                    </select>
-                  </>)}
-                  <Btn onClick={()=>{
-                    const kws = searchKwInput.trim()
-                      ? [...searchKws, searchKwInput.trim()]
-                      : searchKws;
-                    runStream("run/search",{keywords:kws,keyword:kws[0]||"",location:searchLoc,sources:searchSrc,pages:searchPages,semantic:false,direction:direction==="all"?null:direction,linkedin_time_range:linkedinTimeRange,linkedin_experience_level:linkedinExpLevel},"search");
-                  }} loading={loading.search} label="RUN SEARCH" icon="⬇" color="#2e7d52"/>
-                  <Btn onClick={runPipeline}
-                    loading={loading.pipeline}
-                    disabled={loading.pipeline||loading.search||loading["analyze-llm"]||Object.keys(loading).some(k=>k.startsWith("enrich")&&loading[k])}
-                    label="SEARCH + ENRICH + SCORE" icon="⚡" color="#a78bfa"/>
                 </div>
 
-                {/* Pipeline + Cleanup */}
-                <div style={{padding:"6px 10px",borderBottom:"1px solid #d4dece",display:"flex",flexDirection:"column",gap:4}}>
-                  <div style={{fontSize:9,color:"#5a7a68",letterSpacing:"0.12em",fontWeight:700,marginBottom:0}}>② PIPELINE</div>
-                  <Btn onClick={()=>{
-                    const enrichable = ["jobs.ch","jobscout24.ch","swissdevjobs.ch","züri.jobs","efinancialcareers.ch","jobup.ch","linkedin.com","michael-page.ch"];
-                    const sources = searchSrc.filter(s => enrichable.includes(s));
-                    const dir = direction==="all"?null:direction;
-                    if(sources.length) sources.forEach(src => runStream("run/enrich",{limit:9999,source:src,rescore_llm:false,direction:dir},`enrich-${src}`));
-                    else runStream("run/enrich",{limit:9999,source:searchSrc[0]||"jobs.ch",rescore_llm:false,direction:dir},"enrich");
-                  }}
-                    loading={loading.enrich} label="ENRICH DESCRIPTIONS" icon="📄"
-                    color="#2e7d52" disabled={!stats.total}/>
-                  <Btn onClick={()=>{
-                    const enrichable = ["jobs.ch","jobscout24.ch","swissdevjobs.ch","züri.jobs","efinancialcareers.ch","jobup.ch","linkedin.com","michael-page.ch"];
-                    const sources = searchSrc.filter(s => enrichable.includes(s));
-                    const dir = direction==="all"?null:direction;
-                    if(sources.length) sources.forEach(src => runStream("run/enrich",{limit:9999,source:src,rescore_llm:true,direction:dir},`enrich-llm-${src}`));
-                    else runStream("run/enrich",{limit:9999,source:searchSrc[0]||"jobs.ch",rescore_llm:true,direction:dir},"enrich-llm");
-                  }}
-                    loading={loading["enrich-llm"]} label="ENRICH + LLM SCORE" icon="🧠"
-                    color="#a78bfa" disabled={!stats.total}/>
-                  <Btn onClick={()=>runStream("run/analyze",{limit:9999,llm:false,direction:direction==="all"?null:direction},"analyze")}
-                    loading={loading.analyze} label="SCORE (KEYWORD)" icon="⚡"
-                    color="#f59e0b" disabled={!stats.total}/>
-                  <div style={{display:"flex",alignItems:"center",gap:6}}>
-                    <Btn onClick={()=>runStream("run/analyze",{limit:9999,llm:true,archive_below:threshold/100,direction:direction==="all"?null:direction},"analyze-llm")}
-                      loading={loading["analyze-llm"]} label="SCORE (LLM)" icon="🧠"
-                      color="#a78bfa" disabled={!stats.total}/>
-                    <Btn onClick={()=>runStream("run/analyze",{llm:true,skip_scored:false,archive_below:threshold/100,concurrency:10,direction:direction==="all"?null:direction},"rescore-all")}
-                      loading={loading["rescore-all"]} label="RESCORE ALL" icon="🔄"
-                      color="#6366f1" disabled={!stats.total}/>
-                  </div>
-                  <Btn onClick={()=>runStream("run/company-lookup",{min_score:threshold/100},"company-lookup")}
-                    loading={loading["company-lookup"]} label="LOOKUP COMPANIES" icon="🏢"
-                    color="#2e7d52" disabled={!stats.total}/>
-                  <div style={{height:1,background:"#d4dece",margin:"2px 0"}}/>
-                  <div style={{display:"flex",alignItems:"center",gap:5}}>
-                    <Btn onClick={()=>runStream("run/purge-archived",{max_score:threshold/100,dry_run:true},"purge-preview")}
-                      loading={loading["purge-preview"]} label="PREVIEW" icon="🔍" small color="#6b8c7a"/>
-                    <Btn onClick={()=>runStream("run/purge-archived",{max_score:threshold/100,dry_run:false},"purge")}
-                      loading={loading["purge"]} label="PURGE" icon="🗑" small color="#f87171"/>
-                  </div>
+                {/* ── ADVANCED ─────────────────────────────────────── */}
+                <div style={{borderBottom:"1px solid #d4dece"}}>
+                  <button onClick={()=>setAdvancedOpen(o=>!o)} style={{
+                    width:"100%",textAlign:"left",padding:"7px 10px",background:"none",border:"none",cursor:"pointer",
+                    fontSize:9,color:"#5a7a68",letterSpacing:"0.12em",fontWeight:700,fontFamily:"monospace",
+                    display:"flex",alignItems:"center",gap:6,
+                  }}>{advancedOpen?"▾":"▸"} ADVANCED</button>
+                  {advancedOpen && (
+                    <div style={{padding:"0 10px 8px",display:"flex",flexDirection:"column",gap:5}}>
+                      {/* direction selector */}
+                      <div style={{display:"flex",gap:3}}>
+                        {["all",...directions].map(d=>(
+                          <button key={d} onClick={()=>setDirection(d)} style={{
+                            flex:1,fontSize:8,padding:"2px 0",borderRadius:3,border:"1px solid",
+                            borderColor:direction===d?"#2e7d5240":"#d4dece",
+                            background:direction===d?"#2e7d5215":"transparent",
+                            color:direction===d?"#2e7d52":"#6b8c7a",
+                            cursor:"pointer",fontFamily:"monospace",fontWeight:700,letterSpacing:"0.05em",
+                          }}>{d.toUpperCase()}</button>
+                        ))}
+                      </div>
+                      {/* presets */}
+                      {Object.keys(keywordPresets).length>0 && <div style={{display:"flex",gap:3}}>
+                        {Object.entries(keywordPresets).map(([dir, kws])=>(
+                          <button key={dir} onClick={()=>{ setSearchKws(kws); setSearchKwInput(""); setDirection(dir); }} style={{
+                            flex:1,fontSize:8,padding:"3px 0",borderRadius:3,border:"1px solid #2e7d5230",
+                            background:"#2e7d5210",color:"#2e7d52",cursor:"pointer",
+                            fontFamily:"monospace",fontWeight:700,letterSpacing:"0.04em",
+                          }}>⚡ {dir.toUpperCase()}</button>
+                        ))}
+                      </div>}
+                      {/* location + pages */}
+                      <div style={{display:"flex",gap:5}}>
+                        <input value={searchLoc} onChange={e=>setSearchLoc(e.target.value)}
+                          placeholder="city (blank = all CH)" style={{...inp,flex:1}}/>
+                        <button onClick={()=>setSearchLoc("")} title="Search all Switzerland" style={{
+                          padding:"4px 7px",borderRadius:4,border:"1px solid",
+                          borderColor:searchLoc===""?"#2e7d5240":"#d4dece",
+                          background:searchLoc===""?"#2e7d5215":"transparent",
+                          color:searchLoc===""?"#2e7d52":"#6b8c7a",
+                          fontSize:9,fontWeight:700,fontFamily:"monospace",cursor:"pointer",whiteSpace:"nowrap",
+                        }}>ALL CH</button>
+                        <input type="number" min={1} max={40} value={searchPages}
+                          onChange={e=>setSearchPages(Math.max(1,parseInt(e.target.value)||1))}
+                          title="pages per source" style={{...inp,width:64,textAlign:"center"}}/>
+                      </div>
+                      {/* sources */}
+                      <div style={{display:"flex",flexWrap:"wrap",gap:3}}>
+                        <button onClick={()=>setSearchSrc(searchSrc.length===SOURCES.length?[]:SOURCES)} style={{
+                          fontSize:8,padding:"2px 6px",borderRadius:3,border:"1px solid",
+                          borderColor:searchSrc.length===SOURCES.length?"#2e7d5240":"#d4dece",
+                          background:searchSrc.length===SOURCES.length?"#2e7d5215":"transparent",
+                          color:searchSrc.length===SOURCES.length?"#2e7d52":"#6b8c7a",
+                          cursor:"pointer",letterSpacing:"0.04em",fontFamily:"monospace",fontWeight:700,
+                        }}>ALL</button>
+                        {SOURCES.map(s=>(
+                          <button key={s} onClick={()=>setSearchSrc(p=>p.includes(s)?p.filter(x=>x!==s):[...p,s])} style={{
+                            fontSize:8,padding:"2px 6px",borderRadius:3,border:"1px solid",
+                            borderColor:searchSrc.includes(s)?"#2e7d5240":"#d4dece",
+                            background:searchSrc.includes(s)?"#2e7d5215":"transparent",
+                            color:searchSrc.includes(s)?"#2e7d52":"#6b8c7a",
+                            cursor:"pointer",letterSpacing:"0.04em",fontFamily:"monospace",
+                          }}>{s.replace(/\.(ch|com)/,"")}</button>
+                        ))}
+                      </div>
+                      {searchSrc.includes("linkedin.com") && (<>
+                        <select value={linkedinTimeRange} onChange={e=>setLinkedinTimeRange(e.target.value)}
+                          style={{...inp,marginBottom:0,fontSize:9,color:"#4a6a58"}}>
+                          <option value="r86400">LinkedIn · 24h</option>
+                          <option value="r604800">LinkedIn · 7 days</option>
+                          <option value="r2592000">LinkedIn · 30 days</option>
+                        </select>
+                        <select value={linkedinExpLevel} onChange={e=>setLinkedinExpLevel(e.target.value)}
+                          style={{...inp,marginBottom:0,fontSize:9,color:"#4a6a58"}}>
+                          <option value="2,3,4">LinkedIn · Entry–Senior</option>
+                          <option value="3,4">LinkedIn · Associate–Senior</option>
+                          <option value="4">LinkedIn · Senior only</option>
+                          <option value="4,5">LinkedIn · Senior–Director</option>
+                        </select>
+                      </>)}
+                      <div style={{height:1,background:"#d4dece",margin:"2px 0"}}/>
+                      {/* legacy pipeline */}
+                      <Btn onClick={()=>{
+                        const kws = currentKeywords();
+                        runStream("run/search",{keywords:kws,keyword:kws[0]||"",location:searchLoc,sources:searchSrc,pages:searchPages,semantic:false,direction:direction==="all"?null:direction,linkedin_time_range:linkedinTimeRange,linkedin_experience_level:linkedinExpLevel},"search");
+                      }} loading={loading.search} label="RUN SEARCH" icon="⬇" color="#2e7d52"/>
+                      <Btn onClick={runPipeline} loading={loading.pipeline}
+                        disabled={loading.pipeline||loading.search||loading["analyze-llm"]||Object.keys(loading).some(k=>k.startsWith("enrich")&&loading[k])}
+                        label="SEARCH + ENRICH + SCORE" icon="⚡" color="#a78bfa"/>
+                      <Btn onClick={()=>{
+                        const dir=direction==="all"?null:direction;
+                        const sources=searchSrc.filter(s=>ENRICHABLE.includes(s));
+                        (sources.length?sources:[searchSrc[0]||"jobs.ch"]).forEach(src=>runStream("run/enrich",{limit:9999,source:src,rescore_llm:false,direction:dir},`enrich-${src}`));
+                      }} loading={loading.enrich} label="ENRICH DESCRIPTIONS" icon="📄" color="#2e7d52" disabled={!stats.total}/>
+                      <Btn onClick={()=>runStream("run/analyze",{limit:9999,llm:false,direction:direction==="all"?null:direction},"analyze")}
+                        loading={loading.analyze} label="SCORE (KEYWORD)" icon="⚡" color="#f59e0b" disabled={!stats.total}/>
+                      <div style={{display:"flex",alignItems:"center",gap:6}}>
+                        <Btn onClick={()=>runStream("run/analyze",{limit:9999,llm:true,archive_below:threshold/100,direction:direction==="all"?null:direction},"analyze-llm")}
+                          loading={loading["analyze-llm"]} label="SCORE (LLM)" icon="🧠" color="#a78bfa" disabled={!stats.total}/>
+                        <Btn onClick={()=>runStream("run/analyze",{llm:true,skip_scored:false,archive_below:threshold/100,concurrency:10,direction:direction==="all"?null:direction},"rescore-all")}
+                          loading={loading["rescore-all"]} label="RESCORE ALL" icon="🔄" color="#6366f1" disabled={!stats.total}/>
+                      </div>
+                      <Btn onClick={()=>runStream("run/company-lookup",{min_score:threshold/100},"company-lookup")}
+                        loading={loading["company-lookup"]} label="LOOKUP COMPANIES" icon="🏢" color="#2e7d52" disabled={!stats.total}/>
+                      <div style={{display:"flex",alignItems:"center",gap:5}}>
+                        <Btn onClick={()=>runStream("run/purge-archived",{max_score:threshold/100,dry_run:true},"purge-preview")}
+                          loading={loading["purge-preview"]} label="PREVIEW" icon="🔍" small color="#6b8c7a"/>
+                        <Btn onClick={()=>runStream("run/purge-archived",{max_score:threshold/100,dry_run:false},"purge")}
+                          loading={loading["purge"]} label="PURGE" icon="🗑" small color="#f87171"/>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Filter */}
@@ -986,7 +1169,16 @@ export default function App() {
                   display:"flex",alignItems:"center",gap:8,fontSize:9,color:"#5a7a68",flexShrink:0,
                 }}>
                   <span style={{fontWeight:700,letterSpacing:"0.1em"}}>{visible.length} JOBS</span>
-                  <span>· click to inspect · opens URL · auto-marks VIEWED</span>
+                  {newSinceId!==null
+                    ? <span style={{
+                        display:"inline-flex",alignItems:"center",gap:6,fontSize:9,fontWeight:700,
+                        color:"#6366f1",background:"#6366f115",border:"1px solid #6366f140",
+                        borderRadius:3,padding:"2px 8px",letterSpacing:"0.05em",
+                      }}>🔄 NEW SINCE LAST CHECK
+                        <span onClick={()=>setNewSinceId(null)} style={{cursor:"pointer",opacity:0.7,fontWeight:900}}>✕ show all</span>
+                      </span>
+                    : <span>· click to inspect · opens URL · auto-marks VIEWED</span>
+                  }
                   <div style={{flex:1}}/>
                   <button onClick={fetchJobs} style={{background:"none",border:"none",color:"#5a7a68",cursor:"pointer"}}>↺</button>
                 </div>

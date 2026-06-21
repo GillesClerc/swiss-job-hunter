@@ -64,6 +64,212 @@ def get_presets():
     from config.settings import Settings
     return Settings().keyword_presets
 
+
+# ── CV categories ───────────────────────────────────────────────────────────────
+# A "CV category" is one search direction backed by data/cv_{direction}.txt and a
+# set of LLM-extracted *search* keywords (job-title terms used to scrape), stored
+# at data/cv_search_keywords_{direction}.json. These are distinct from the scoring
+# pre-filter keywords (data/cv_keywords_{direction}.json).
+
+DATA_DIR = settings.cv_text_path.parent
+
+
+def _sanitize_direction(name: str) -> str:
+    import re
+    s = (name or "").strip().lower()
+    s = re.sub(r"[^a-z0-9_-]+", "_", s).strip("_-")
+    return s
+
+
+def _cv_path(direction: str) -> Path:
+    return DATA_DIR / f"cv_{direction}.txt"
+
+
+def _search_kw_path(direction: str) -> Path:
+    return DATA_DIR / f"cv_search_keywords_{direction}.json"
+
+
+def _scoring_kw_path(direction: str) -> Path:
+    return DATA_DIR / f"cv_keywords_{direction}.json"
+
+
+def _read_search_keywords(direction: str) -> list[str]:
+    f = _search_kw_path(direction)
+    if f.exists():
+        try:
+            return list(json.loads(f.read_text(encoding="utf-8")).get("keywords", []))
+        except Exception:
+            return []
+    return []
+
+
+def _write_search_keywords(direction: str, keywords: list[str]) -> list[str]:
+    kws = [str(k).strip() for k in keywords if str(k).strip()]
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _search_kw_path(direction).write_text(
+        json.dumps({"keywords": kws}, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return kws
+
+
+async def _extract_search_keywords_llm(cv_text: str) -> list[str]:
+    """Ask the LLM for job-board search terms (job titles) tailored to the CV."""
+    import re
+    from llm.router import call_llm
+
+    system = "You are a career assistant helping a candidate search job boards in Switzerland."
+    user = f"""Based on the CV below, propose 8-12 concise job-title search terms to use
+on job boards (e.g. "machine learning engineer", "LLM application engineer").
+
+Rules:
+- Each term is a job title someone would type into a job board search box.
+- Keep them short (2-4 words), lowercase, no punctuation.
+- Cover the candidate's realistic target roles, from core to adjacent.
+- Return ONLY a JSON array of strings, no markdown:
+
+["machine learning engineer", "ai engineer", ...]
+
+CV:
+{cv_text[:5000]}"""
+
+    raw, _ = await call_llm(user=user, system=system, max_tokens=512)
+    raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
+    raw = re.sub(r"\n?```$", "", raw)
+    m = re.search(r"\[.*\]", raw, re.DOTALL)
+    if not m:
+        return []
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return []
+    seen, out = set(), []
+    for x in data:
+        kw = str(x).strip()
+        if kw and kw.lower() not in seen:
+            seen.add(kw.lower())
+            out.append(kw)
+    return out[:12]
+
+
+class CVUploadRequest(BaseModel):
+    direction: str
+    content: str
+
+
+class KeywordsBody(BaseModel):
+    keywords: list[str]
+
+
+class RenameBody(BaseModel):
+    new_name: str
+
+
+@app.get("/cv-categories")
+def cv_categories():
+    """List every CV category: its direction, saved search keywords, and job count."""
+    import glob
+    from db.session import get_session, init_db
+    from db.models import Job
+    init_db()
+    with get_session() as session:
+        counts = dict(
+            session.query(Job.direction, func.count(Job.id)).group_by(Job.direction).all()
+        )
+    cats = []
+    for p in sorted(glob.glob(str(DATA_DIR / "cv_*.txt"))):
+        direction = Path(p).stem[3:]  # strip leading "cv_"
+        cats.append({
+            "direction": direction,
+            "keywords": _read_search_keywords(direction),
+            "job_count": counts.get(direction, 0),
+        })
+    return cats
+
+
+@app.post("/cv/upload")
+def cv_upload(req: CVUploadRequest):
+    """Persist an uploaded CV as data/cv_{direction}.txt, creating a category."""
+    direction = _sanitize_direction(req.direction)
+    if not direction:
+        raise HTTPException(400, "Invalid direction name")
+    if not req.content.strip():
+        raise HTTPException(400, "Empty CV content")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _cv_path(direction).write_text(req.content, encoding="utf-8")
+    return {"ok": True, "direction": direction}
+
+
+@app.get("/cv/{direction}/search-keywords")
+def get_search_keywords(direction: str):
+    direction = _sanitize_direction(direction)
+    return {"direction": direction, "keywords": _read_search_keywords(direction)}
+
+
+@app.put("/cv/{direction}/search-keywords")
+def put_search_keywords(direction: str, body: KeywordsBody):
+    direction = _sanitize_direction(direction)
+    if not _cv_path(direction).exists():
+        raise HTTPException(404, "CV category not found")
+    return {"direction": direction, "keywords": _write_search_keywords(direction, body.keywords)}
+
+
+@app.post("/cv/{direction}/search-keywords/extract")
+async def extract_search_keywords(direction: str):
+    """Run the LLM to derive search keywords from the CV, then persist them."""
+    from analyzer.scorer import load_cv_text
+    direction = _sanitize_direction(direction)
+    try:
+        cv_text = load_cv_text(direction=direction)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    keywords = await _extract_search_keywords_llm(cv_text)
+    if not keywords:
+        raise HTTPException(502, "Keyword extraction returned nothing — check LLM config")
+    return {"direction": direction, "keywords": _write_search_keywords(direction, keywords)}
+
+
+@app.patch("/cv-categories/{direction}")
+def rename_category(direction: str, body: RenameBody):
+    """Rename a category: CV file, keyword caches, and the direction tag on jobs."""
+    from db.session import get_session
+    from db.models import Job
+    old = _sanitize_direction(direction)
+    new = _sanitize_direction(body.new_name)
+    if not new:
+        raise HTTPException(400, "Invalid new name")
+    if not _cv_path(old).exists():
+        raise HTTPException(404, "CV category not found")
+    if old == new:
+        return {"direction": new}
+    if _cv_path(new).exists():
+        raise HTTPException(409, f"Category '{new}' already exists")
+    _cv_path(old).rename(_cv_path(new))
+    for src, dst in ((_search_kw_path(old), _search_kw_path(new)),
+                     (_scoring_kw_path(old), _scoring_kw_path(new))):
+        if src.exists():
+            src.rename(dst)
+    with get_session() as session:
+        session.query(Job).filter(Job.direction == old).update({Job.direction: new})
+    return {"direction": new}
+
+
+@app.delete("/cv-categories/{direction}")
+def delete_category(direction: str):
+    """Delete a category's CV file and keyword caches. Jobs are kept but untagged."""
+    from db.session import get_session
+    from db.models import Job
+    d = _sanitize_direction(direction)
+    if not _cv_path(d).exists():
+        raise HTTPException(404, "CV category not found")
+    _cv_path(d).unlink()
+    for f in (_search_kw_path(d), _scoring_kw_path(d)):
+        if f.exists():
+            f.unlink()
+    with get_session() as session:
+        session.query(Job).filter(Job.direction == d).update({Job.direction: None})
+    return {"ok": True}
+
+
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
 def get_jobs_query(status: str = "all", q: str = "", direction: str = "all", min_stars: int = 0):
