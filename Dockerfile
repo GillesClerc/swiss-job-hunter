@@ -26,7 +26,12 @@ RUN apt-get update \
 
 # Install Python deps first for better layer caching.
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# Install the CPU-only build of PyTorch BEFORE the rest: sentence-transformers
+# pulls torch, and the default PyPI wheel ships the full CUDA stack (cuDNN,
+# cuBLAS, NCCL, … — several GB). This VPS has no GPU, so install the CPU wheel
+# first; the requirements install then sees torch already satisfied.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Install the matching Chromium for the resolved Playwright version plus all of
 # its system libraries (robust against Playwright version drift).
