@@ -1,8 +1,8 @@
 """
-LLM provider router — round-robin between Anthropic, DeepSeek, OpenRouter, and Ollama.
+LLM provider router — round-robin between Anthropic, DeepSeek, OpenRouter, Gemini, and Ollama.
 
-DeepSeek, OpenRouter, and Ollama are OpenAI-compatible, so we use the openai SDK for all three.
-Anthropic uses its own SDK.
+DeepSeek, OpenRouter, Gemini, and Ollama are OpenAI-compatible, so we use the openai SDK
+for all four. Anthropic uses its own SDK.
 
 Usage:
     from llm.router import call_llm
@@ -38,6 +38,8 @@ def _build_cycle() -> itertools.cycle:
         return itertools.cycle(["openrouter"])
     if settings.llm_provider == "ollama":
         return itertools.cycle(["ollama"])
+    if settings.llm_provider == "gemini":
+        return itertools.cycle(["gemini"])
 
     # "auto" — include only providers that have a key set
     available: list[str] = []
@@ -47,13 +49,15 @@ def _build_cycle() -> itertools.cycle:
         available.append("deepseek")
     if settings.openrouter_api_key:
         available.append("openrouter")
+    if settings.gemini_api_key:
+        available.append("gemini")
     if settings.ollama_base_url:
         available.append("ollama")
 
     if not available:
         raise RuntimeError(
             "No LLM provider configured. Set ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, "
-            "OPENROUTER_API_KEY, or OLLAMA_BASE_URL."
+            "OPENROUTER_API_KEY, GEMINI_API_KEY, or OLLAMA_BASE_URL."
         )
 
     return itertools.cycle(available)
@@ -148,6 +152,26 @@ async def _call_ollama(system: str, user: str, max_tokens: int) -> str:
     return (response.choices[0].message.content or "").strip()
 
 
+# ── Gemini call (OpenAI-compatible) ───────────────────────────────────────────
+
+async def _call_gemini(system: str, user: str, max_tokens: int) -> str:
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(
+        api_key=settings.gemini_api_key,
+        base_url=settings.gemini_base_url,
+    )
+    response = await client.chat.completions.create(
+        model=settings.gemini_model,
+        max_tokens=max_tokens,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    )
+    return (response.choices[0].message.content or "").strip()
+
+
 # ── Public interface ───────────────────────────────────────────────────────────
 
 async def call_llm(
@@ -172,6 +196,8 @@ async def call_llm(
         coro = _call_openrouter(system, user, max_tokens)
     elif p == "ollama":
         coro = _call_ollama(system, user, max_tokens)
+    elif p == "gemini":
+        coro = _call_gemini(system, user, max_tokens)
     else:
         raise ValueError(f"Unknown provider: {p}")
 

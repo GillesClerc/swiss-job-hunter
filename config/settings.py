@@ -38,13 +38,19 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3.6:latest"
     ollama_think: bool = False
 
+    # ── Gemini (Google AI) ───────────────────────────────────────────────────────
+    # Uses Google's OpenAI-compatible endpoint, so we reuse the openai SDK.
+    gemini_api_key: str = Field(default="", description="Google AI Studio API key")
+    gemini_model: str = "gemini-3.5-flash"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
     # ── LLM routing ────────────────────────────────────────────────────────────
     # "auto"        → round-robin between all configured providers
     # "anthropic"   → always use Anthropic
     # "deepseek"    → always use DeepSeek
     # "openrouter"  → always use OpenRouter
     # "ollama"      → always use Ollama (local, no API key required)
-    llm_provider: Literal["auto", "anthropic", "deepseek", "openrouter", "ollama"] = "auto"
+    llm_provider: Literal["auto", "anthropic", "deepseek", "openrouter", "ollama", "gemini"] = "auto"
 
     # ── Database ───────────────────────────────────────────────────────────────
     database_url: str = "sqlite:///./data/jobs.db"
@@ -123,12 +129,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def check_at_least_one_llm(self) -> "Settings":
-        has_cloud = self.anthropic_api_key or self.deepseek_api_key or self.openrouter_api_key
+        has_cloud = (
+            self.anthropic_api_key or self.deepseek_api_key
+            or self.openrouter_api_key or self.gemini_api_key
+        )
         has_local = bool(self.ollama_base_url)
         if not has_cloud and not has_local:
             raise ValueError(
                 "At least one LLM provider is required: set ANTHROPIC_API_KEY, "
-                "DEEPSEEK_API_KEY, OPENROUTER_API_KEY, or OLLAMA_BASE_URL in .env"
+                "DEEPSEEK_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY, or OLLAMA_BASE_URL in .env"
             )
         return self
 
