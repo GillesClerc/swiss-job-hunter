@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     # Uses Google's OpenAI-compatible endpoint, so we reuse the openai SDK.
     gemini_api_key: str = Field(default="", description="Google AI Studio API key")
     gemini_model: str = "gemini-3.5-flash"
+    # Used automatically when the primary model errors (e.g. "high demand" 429/503).
+    gemini_fallback_model: str = "gemini-3.1-flash-lite"
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
     # ── LLM routing ────────────────────────────────────────────────────────────

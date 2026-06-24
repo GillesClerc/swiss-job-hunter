@@ -161,15 +161,29 @@ async def _call_gemini(system: str, user: str, max_tokens: int) -> str:
         api_key=settings.gemini_api_key,
         base_url=settings.gemini_base_url,
     )
-    response = await client.chat.completions.create(
-        model=settings.gemini_model,
-        max_tokens=max_tokens,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    )
-    return (response.choices[0].message.content or "").strip()
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+    # Try the primary model; on any API error (e.g. "model is overloaded" /
+    # high-demand 429/503), fall back once to the configured fallback model.
+    models = [settings.gemini_model]
+    if settings.gemini_fallback_model and settings.gemini_fallback_model != settings.gemini_model:
+        models.append(settings.gemini_fallback_model)
+
+    last_err: Exception | None = None
+    for model in models:
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                max_tokens=max_tokens,
+                messages=messages,
+            )
+            return (response.choices[0].message.content or "").strip()
+        except Exception as e:  # noqa: BLE001 — retry on the fallback model
+            last_err = e
+    raise last_err
 
 
 # ── Public interface ───────────────────────────────────────────────────────────
