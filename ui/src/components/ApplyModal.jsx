@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { API } from "../api";
+import { API, apiFetch } from "../api";
 import { APPLY_METHODS, inp } from "../constants";
 import Btn from "./Btn";
 
@@ -13,10 +13,11 @@ export default function ApplyModal({ job, coverLetter, onClose, onDone, addLog }
   const submit = async () => {
     setLoading(true);
     try {
-      await fetch(`${API}/jobs/${job.id}/apply`, {
+      const r = await apiFetch(`${API}/jobs/${job.id}/apply`, {
         method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ method, recipient_email:recipient, contact_name:contact, note, cover_letter:coverLetter }),
       });
+      if (!r.ok) { addLog(`✗ Mark-as-applied failed: ${(await r.text()).slice(0,100)}`); setLoading(false); return; }
       addLog(`✓ Job #${job.id} marked as APPLIED (${method})`);
       onDone();
     } catch(e) { addLog(`✗ ${e.message}`); }

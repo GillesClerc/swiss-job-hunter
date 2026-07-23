@@ -11,7 +11,7 @@ from typing import AsyncGenerator
 from bs4 import BeautifulSoup
 
 from scrapers.base import BaseScraper, ScrapedJob
-from scrapers.company_common import get_cached, set_cached
+from scrapers.company_common import get_cached, set_cached_if_nonempty
 
 LISTING_URL = "https://juice.world/en/pages/jobs"
 
@@ -39,8 +39,7 @@ class JuiceScraper(BaseScraper):
                     title = link.get_text(strip=True)
                     if title:
                         jobs.append({"title": title, "url": href if href.startswith("http") else "https://juice.world" + href})
-        set_cached("juice", jobs)
-        return jobs
+        return set_cached_if_nonempty("juice", jobs)
 
     async def scrape(
         self, keyword: str, location: str, max_pages: int
@@ -51,7 +50,10 @@ class JuiceScraper(BaseScraper):
             yield ScrapedJob(
                 title=j["title"],
                 company="Juice",
-                location=location or "Zürich, Switzerland",
+                # No per-offer location scraped yet (0 postings observed at
+                # implementation time) — the company's own HQ, never the
+                # user's search location, which would mislabel real offers.
+                location="Zürich, Switzerland",
                 description=j["title"],
                 url=j["url"],
                 source=self.source_name,

@@ -19,6 +19,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # ── API auth ───────────────────────────────────────────────────────────────
+    # Shared secret the frontend must send as the `X-API-Key` header. Leave
+    # empty (default) to keep the API open, e.g. for a localhost/Tailscale-only
+    # deployment. Set this before exposing the backend on the public internet —
+    # the UI must be rebuilt with a matching VITE_API_KEY to keep working.
+    api_key: str = ""
+
     # ── Anthropic ──────────────────────────────────────────────────────────────
     anthropic_api_key: str = Field(default="", description="Anthropic API key")
     anthropic_model: str = "claude-sonnet-4-20250514"

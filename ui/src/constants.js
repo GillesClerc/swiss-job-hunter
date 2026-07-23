@@ -1,14 +1,14 @@
 export const STATUS_META = {
-  new:          { label: "NEW",         color: "#4a7a60", bg: "rgba(100,116,139,0.12)" },
-  analyzed:     { label: "ANALYZED",    color: "#2e7d52", bg: "rgba(56,189,248,0.12)" },
+  new:          { label: "NEW",         color: "#4a7a60", bg: "rgba(74,122,96,0.12)" },
+  analyzed:     { label: "ANALYZED",    color: "#2e7d52", bg: "rgba(46,125,82,0.12)" },
   shortlisted:  { label: "SHORTLISTED", color: "#f59e0b", bg: "rgba(245,158,11,0.12)" },
-  viewed:       { label: "VIEWED",      color: "#7aa090", bg: "rgba(129,140,248,0.12)" },
+  viewed:       { label: "VIEWED",      color: "#7aa090", bg: "rgba(122,160,144,0.12)" },
   considering:  { label: "CONSIDERING", color: "#38bdf8", bg: "rgba(56,189,248,0.12)" },
   applied:      { label: "APPLIED",     color: "#34d399", bg: "rgba(52,211,153,0.12)" },
   interviewing: { label: "INTERVIEW",   color: "#a78bfa", bg: "rgba(167,139,250,0.12)" },
   offer:        { label: "OFFER 🎉",    color: "#fb923c", bg: "rgba(251,146,60,0.12)" },
   rejected:     { label: "REJECTED",    color: "#f87171", bg: "rgba(248,113,113,0.08)" },
-  archived:     { label: "ARCHIVED",    color: "#6b8c7a", bg: "rgba(51,65,85,0.12)" },
+  archived:     { label: "ARCHIVED",    color: "#6b8c7a", bg: "rgba(107,140,122,0.12)" },
 };
 
 export const EVENT_META = {

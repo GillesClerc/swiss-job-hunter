@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { API } from "../api";
+import { API, apiFetch } from "../api";
 import { inp } from "../constants";
 import Btn from "../components/Btn";
 import LogPane from "../components/LogPane";
@@ -22,13 +22,16 @@ export default function ProfilesTab() {
   const [saving, setSaving] = useState(false);
   const [extractingKw, setExtractingKw] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [backendOk, setBackendOk] = useState(true);
   const fileInputRef = useRef();
 
   const loadProfiles = useCallback(async () => {
     try {
-      const r = await fetch(`${API}/profiles`);
-      if (r.ok) { setProfiles(await r.json()); }
-    } catch {}
+      const r = await apiFetch(`${API}/profiles`);
+      if (r.ok) { setProfiles(await r.json()); setBackendOk(true); }
+    } catch {
+      setBackendOk(false);
+    }
   }, []);
 
   useEffect(() => { loadProfiles(); }, [loadProfiles]);
@@ -72,7 +75,7 @@ export default function ProfilesTab() {
       const body = isNew
         ? { name, cv_text: cvText, wish_description: wishDescription, search_keywords: searchKeywords }
         : { cv_text: cvText, wish_description: wishDescription, search_keywords: searchKeywords };
-      const r = await fetch(url, { method, headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+      const r = await apiFetch(url, { method, headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
       if (!r.ok) { addLog(`✗ Save failed: ${(await r.text()).slice(0,100)}`); return; }
       const d = await r.json();
       addLog(`✓ Profile "${d.name}" saved`);
@@ -86,7 +89,7 @@ export default function ProfilesTab() {
     if (selectedName === NEW || !selectedName) { addLog("✗ Save the profile first"); return; }
     setExtractingKw(true);
     try {
-      const r = await fetch(`${API}/profiles/${selectedName}/search-keywords/extract`, { method:"POST" });
+      const r = await apiFetch(`${API}/profiles/${selectedName}/search-keywords/extract`, { method:"POST" });
       if (!r.ok) { addLog(`✗ Extract failed: ${(await r.text()).slice(0,100)}`); }
       else {
         const d = await r.json();
@@ -103,7 +106,7 @@ export default function ProfilesTab() {
     setRenaming(false);
     if (!newName || newName === selectedName) return;
     try {
-      const r = await fetch(`${API}/profiles/${selectedName}`, {
+      const r = await apiFetch(`${API}/profiles/${selectedName}`, {
         method:"PATCH", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ new_name: newName }),
       });
@@ -118,7 +121,7 @@ export default function ProfilesTab() {
   const deleteProfile = async () => {
     if (!window.confirm(`Delete profile "${selectedName}"? Jobs are kept but untagged.`)) return;
     try {
-      const r = await fetch(`${API}/profiles/${selectedName}`, { method:"DELETE" });
+      const r = await apiFetch(`${API}/profiles/${selectedName}`, { method:"DELETE" });
       if (!r.ok) { addLog(`✗ Delete failed: ${(await r.text()).slice(0,80)}`); return; }
       addLog(`✓ Deleted profile "${selectedName}"`);
       setSelectedName(null); resetForm();
@@ -154,9 +157,15 @@ export default function ProfilesTab() {
         background:"#f0f3ed",flexShrink:0,overflow:"hidden"}}>
         <div style={{padding:"10px 12px",borderBottom:"1px solid #d4dece"}}>
           <Btn onClick={startNew} label="+ NEW PROFILE" icon="👤" color="#2e7d52"/>
+          {!backendOk && (
+            <div style={{marginTop:8,fontSize:9,fontWeight:700,color:"#f87171",background:"#f8717115",
+              border:"1px solid #f8717140",borderRadius:3,padding:"4px 7px",textAlign:"center"}}>
+              ✗ BACKEND OFFLINE
+            </div>
+          )}
         </div>
         <div style={{flex:1,overflowY:"auto",padding:8}}>
-          {profiles.length===0 && (
+          {backendOk && profiles.length===0 && (
             <div style={{fontSize:10,color:"#6b8c7a",fontStyle:"italic",padding:"8px 4px"}}>
               No profile yet — create one to start searching.
             </div>

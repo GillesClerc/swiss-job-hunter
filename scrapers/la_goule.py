@@ -11,7 +11,7 @@ from typing import AsyncGenerator
 from bs4 import BeautifulSoup
 
 from scrapers.base import BaseScraper, ScrapedJob
-from scrapers.company_common import get_cached, set_cached
+from scrapers.company_common import get_cached, set_cached_if_nonempty
 
 LISTING_URL = "https://www.lagoule.ch/fr/jobs-et-carrieres"
 
@@ -44,8 +44,7 @@ class LaGouleScraper(BaseScraper):
                     if text:
                         desc_parts.append(text)
                 jobs.append({"title": title, "description": " ".join(desc_parts) or title})
-        set_cached("la-goule", jobs)
-        return jobs
+        return set_cached_if_nonempty("la-goule", jobs)
 
     async def scrape(
         self, keyword: str, location: str, max_pages: int
@@ -56,7 +55,9 @@ class LaGouleScraper(BaseScraper):
             yield ScrapedJob(
                 title=j["title"],
                 company="La Goule",
-                location=location or "Saint-Imier, Switzerland",
+                # No per-offer location scraped yet — the plant's own location,
+                # never the user's search location, which would mislabel it.
+                location="Saint-Imier, Switzerland",
                 description=j["description"],
                 url=LISTING_URL,
                 source=self.source_name,

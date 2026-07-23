@@ -10,7 +10,7 @@ from typing import AsyncGenerator
 from bs4 import BeautifulSoup
 
 from scrapers.base import BaseScraper, ScrapedJob
-from scrapers.company_common import get_cached, set_cached
+from scrapers.company_common import get_cached, set_cached_if_nonempty
 
 LISTING_URL = "https://move.ch/en/jobs/"
 
@@ -36,8 +36,7 @@ class MoveScraper(BaseScraper):
                     title = link.get_text(strip=True)
                     if title:
                         jobs.append({"title": title, "url": href if href.startswith("http") else "https://move.ch" + href})
-        set_cached("move", jobs)
-        return jobs
+        return set_cached_if_nonempty("move", jobs)
 
     async def scrape(
         self, keyword: str, location: str, max_pages: int
@@ -48,7 +47,10 @@ class MoveScraper(BaseScraper):
             yield ScrapedJob(
                 title=j["title"],
                 company="Move",
-                location=location or "Switzerland",
+                # No per-offer location scraped yet (0 postings observed at
+                # implementation time) — never the user's search location,
+                # which would mislabel real offers.
+                location="Switzerland",
                 description=j["title"],
                 url=j["url"],
                 source=self.source_name,

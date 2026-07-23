@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { API } from "../api";
+import { API, apiFetch } from "../api";
 import { SOURCES, ENRICHABLE, LANGUAGES, STATUS_META, inp } from "../constants";
 import Btn from "../components/Btn";
 import Badge from "../components/Badge";
@@ -56,7 +56,7 @@ export default function SearchTab() {
   const fetchJobs = useCallback(async () => {
     try {
       const dir = profileName || "all";
-      const r = await fetch(`${API}/jobs?status=${filterStatus}&q=${encodeURIComponent(filterText)}&direction=${dir}&min_stars=${filterMinStars}&language=${filterLanguage}`);
+      const r = await apiFetch(`${API}/jobs?status=${filterStatus}&q=${encodeURIComponent(filterText)}&direction=${dir}&min_stars=${filterMinStars}&language=${filterLanguage}`);
       if (r.ok) { setJobs(await r.json()); setBackendOk(true); }
     } catch {
       if (backendOk) addLog("✗ Backend offline — run: python server.py");
@@ -65,18 +65,18 @@ export default function SearchTab() {
   }, [filterStatus, filterText, profileName, filterMinStars, filterLanguage, addLog, backendOk]);
 
   const fetchStats = useCallback(async () => {
-    try { const r = await fetch(`${API}/stats?threshold=${threshold/100}`); if (r.ok) setStats(await r.json()); } catch {}
+    try { const r = await apiFetch(`${API}/stats?threshold=${threshold/100}`); if (r.ok) setStats(await r.json()); } catch {}
   }, [threshold]);
 
   useEffect(() => { fetchJobs(); fetchStats(); }, [fetchJobs, fetchStats]);
 
   const loadProfiles = useCallback(async () => {
-    try { const r = await fetch(`${API}/profiles`); if (r.ok) setProfiles(await r.json()); } catch {}
+    try { const r = await apiFetch(`${API}/profiles`); if (r.ok) setProfiles(await r.json()); } catch {}
   }, []);
   useEffect(() => { loadProfiles(); }, [loadProfiles]);
 
   const loadWatchlist = useCallback(async () => {
-    try { const r = await fetch(`${API}/watched-companies`); if (r.ok) setWatchedCompanies(await r.json()); } catch {}
+    try { const r = await apiFetch(`${API}/watched-companies`); if (r.ok) setWatchedCompanies(await r.json()); } catch {}
   }, []);
   useEffect(() => { loadWatchlist(); }, [loadWatchlist]);
 
@@ -94,21 +94,25 @@ export default function SearchTab() {
     if (!name) return;
     setCompanyInput("");
     try {
-      const r = await fetch(`${API}/watched-companies`, {
+      const r = await apiFetch(`${API}/watched-companies`, {
         method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name}),
       });
       if (r.ok) loadWatchlist(); else addLog(`✗ ${(await r.text()).slice(0,80)}`);
     } catch (e) { addLog(`✗ ${e.message}`); }
   };
   const removeCompany = async (id) => {
-    try { await fetch(`${API}/watched-companies/${id}`, { method:"DELETE" }); loadWatchlist(); } catch {}
+    try {
+      const r = await apiFetch(`${API}/watched-companies/${id}`, { method:"DELETE" });
+      if (!r.ok) { addLog(`✗ Remove company failed: ${(await r.text()).slice(0,80)}`); return; }
+      loadWatchlist();
+    } catch (e) { addLog(`✗ ${e.message}`); }
   };
 
   // ── SSE runner ────────────────────────────────────────────────────────────
   const runStream = useCallback((endpoint, body, key) => {
     setLoading(p=>({...p,[key]:true}));
     addLog(`→ ${key} started`);
-    return fetch(`${API}/${endpoint}`, {
+    return apiFetch(`${API}/${endpoint}`, {
       method:"POST",
       headers:{"Content-Type":"application/json","Accept":"text/event-stream"},
       body:JSON.stringify(body),
@@ -186,7 +190,10 @@ export default function SearchTab() {
   }, [jobs, scrape, addLog]);
 
   const deleteJob = async (jobId) => {
-    await fetch(`${API}/jobs/${jobId}`, { method: "DELETE" });
+    try {
+      const r = await apiFetch(`${API}/jobs/${jobId}`, { method: "DELETE" });
+      if (!r.ok) { addLog(`✗ Delete job #${jobId} failed: ${(await r.text()).slice(0,80)}`); return; }
+    } catch (e) { addLog(`✗ ${e.message}`); return; }
     if (selectedId === jobId) setSelectedId(null);
     fetchJobs(); fetchStats();
   };

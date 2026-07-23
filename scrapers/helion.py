@@ -9,7 +9,7 @@ from typing import AsyncGenerator
 from bs4 import BeautifulSoup
 
 from scrapers.base import BaseScraper, ScrapedJob
-from scrapers.company_common import get_cached, set_cached
+from scrapers.company_common import get_cached, set_cached_if_nonempty
 
 LISTING_URL = "https://jobs.helion.ch/"
 
@@ -38,8 +38,7 @@ class HelionScraper(BaseScraper):
                 "location": loc_el.get_text(strip=True) if loc_el else "",
                 "url": link["href"] if link["href"].startswith("http") else LISTING_URL.rstrip("/") + "/" + link["href"].lstrip("/"),
             })
-        set_cached("helion", jobs)
-        return jobs
+        return set_cached_if_nonempty("helion", jobs)
 
     async def scrape(
         self, keyword: str, location: str, max_pages: int

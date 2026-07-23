@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { API } from "../api";
+import { API, apiFetch } from "../api";
 import { STATUS_META } from "../constants";
 import { DualScore } from "../components/ScoreBar";
 import DetailPanel from "../components/DetailPanel";
@@ -11,10 +11,15 @@ export default function TrackerTab() {
   const [selectedId, setSelectedId] = useState(null);
   const [log, setLog] = useState([]);
   const addLog = useCallback(l => setLog(p=>[...p.slice(-100),l]),[]);
+  const [backendOk, setBackendOk] = useState(true);
 
   const load = useCallback(async () => {
-    const r = await fetch(`${API}/tracker`);
-    if (r.ok) setItems(await r.json());
+    try {
+      const r = await apiFetch(`${API}/tracker`);
+      if (r.ok) { setItems(await r.json()); setBackendOk(true); }
+    } catch {
+      setBackendOk(false);
+    }
   }, []);
 
   useEffect(() => { load(); const t = setInterval(load, 15000); return ()=>clearInterval(t); }, [load]);
@@ -33,6 +38,10 @@ export default function TrackerTab() {
           <span style={{fontSize:10,fontWeight:700,color:"#5a7a68",letterSpacing:"0.1em"}}>SUIVI</span>
           <span style={{fontSize:10,color:"#6b8c7a"}}>·</span>
           <span style={{fontSize:10,color:"#6b8c7a"}}>{items.length} actives</span>
+          {!backendOk && (
+            <span style={{fontSize:9,fontWeight:700,color:"#f87171",background:"#f8717115",
+              border:"1px solid #f8717140",borderRadius:3,padding:"2px 7px"}}>✗ BACKEND OFFLINE</span>
+          )}
           <div style={{flex:1}}/>
           <button onClick={load} style={{background:"none",border:"none",color:"#5a7a68",cursor:"pointer",fontSize:12}}>↺</button>
         </div>

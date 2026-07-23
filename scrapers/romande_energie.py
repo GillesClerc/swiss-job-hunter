@@ -10,7 +10,7 @@ from typing import AsyncGenerator, Optional
 from bs4 import BeautifulSoup
 
 from scrapers.base import BaseScraper, ScrapedJob
-from scrapers.company_common import get_cached, set_cached
+from scrapers.company_common import get_cached, set_cached_if_nonempty
 
 CAREERS_URL = "https://www.romande-energie.ch/carrieres/nos-offres-demploi"
 
@@ -29,7 +29,8 @@ class RomandeEnergieScraper(BaseScraper):
         soup = BeautifulSoup(page.text, "lxml")
         widget = soup.find(attrs={"data-company-hash-key": True})
         if widget is None:
-            set_cached("romande-energie", [])
+            # Page structure changed / widget missing — don't cache, so the
+            # next call retries rather than silently reporting 0 offers.
             return []
 
         hash_key = widget["data-company-hash-key"]
@@ -41,8 +42,7 @@ class RomandeEnergieScraper(BaseScraper):
         offers = resp.json()
         if isinstance(offers, dict):
             offers = offers.get("data", [])
-        set_cached("romande-energie", offers)
-        return offers
+        return set_cached_if_nonempty("romande-energie", offers)
 
     async def scrape(
         self, keyword: str, location: str, max_pages: int

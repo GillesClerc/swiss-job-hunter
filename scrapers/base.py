@@ -92,7 +92,11 @@ class BaseScraper(ABC):
         client = await self._get_client()
         await self._polite_delay()
         response = await client.get(url, **kwargs)
-        response.raise_for_status()
+        # 404/410 are meaningful signals (expired listing) several scrapers check
+        # via response.status_code — don't raise (or waste retries) on those,
+        # only on genuine failures.
+        if response.status_code not in (404, 410):
+            response.raise_for_status()
         return response
 
     @retry(

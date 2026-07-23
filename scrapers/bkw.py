@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import AsyncGenerator
 
 from scrapers.base import BaseScraper, ScrapedJob
-from scrapers.company_common import get_cached, set_cached
+from scrapers.company_common import get_cached, set_cached_if_nonempty
 
 LISTING_URL = "https://jobs.bkw.com/_api/v1/structureddata?configFromContentElement=82381&language=de-ch"
 
@@ -36,8 +36,7 @@ class BKWScraper(BaseScraper):
         resp = await self._fetch(LISTING_URL)
         data = resp.json()
         jobs = data.get("data", [])
-        set_cached("bkw", jobs)
-        return jobs
+        return set_cached_if_nonempty("bkw", jobs)
 
     async def scrape(
         self, keyword: str, location: str, max_pages: int

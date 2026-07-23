@@ -208,24 +208,28 @@ async def _analyze(profile: str, limit: int, use_llm: bool, min_score: float, re
 
         async def score_one(jid: int, title: str, description: str, old_status) -> None:
             nonlocal shortlisted, completed
-            async with sem:
-                result = await score_job(cv_text, wish_text, title, description)
-            with get_session() as session:
-                j = session.get(Job, jid)
-                if j:
-                    j.match_score = result.skill_score
-                    j.match_explanation = result.skill_explanation
-                    j.wish_score = result.wish_score
-                    j.wish_explanation = result.wish_explanation
-                    if result.language_required:
-                        j.language_required = result.language_required
-                    # Preserve ARCHIVED/VIEWED; only promote NEW/ANALYZED
-                    if j.status in (JobStatus.NEW, JobStatus.ANALYZED):
-                        j.status = (
-                            JobStatus.SHORTLISTED if result.skill_score >= min_score else JobStatus.ANALYZED
-                        )
-                    if result.skill_score >= min_score:
-                        shortlisted += 1
+            try:
+                async with sem:
+                    result = await score_job(cv_text, wish_text, title, description)
+                with get_session() as session:
+                    j = session.get(Job, jid)
+                    if j:
+                        j.match_score = result.skill_score
+                        j.match_explanation = result.skill_explanation
+                        j.wish_score = result.wish_score
+                        j.wish_explanation = result.wish_explanation
+                        if result.language_required:
+                            j.language_required = result.language_required
+                        # Preserve ARCHIVED/VIEWED; only promote NEW/ANALYZED
+                        if j.status in (JobStatus.NEW, JobStatus.ANALYZED):
+                            j.status = (
+                                JobStatus.SHORTLISTED if result.skill_score >= min_score else JobStatus.ANALYZED
+                            )
+                        if result.skill_score >= min_score:
+                            shortlisted += 1
+            except Exception as e:
+                # One bad LLM response shouldn't cancel the whole gather() batch.
+                console.print(f"  [red]✗ job {jid} error: {e}[/red]")
             completed += 1
             if completed % 50 == 0 or completed == total:
                 console.print(f"  {completed}/{total} done...")

@@ -28,3 +28,16 @@ def get_cached(key: str) -> Optional[Any]:
 
 def set_cached(key: str, value: Any) -> None:
     _CACHE[key] = (time.time(), value)
+
+
+def set_cached_if_nonempty(key: str, value: list) -> list:
+    """
+    Like `set_cached`, but an empty list is never cached. A site returning
+    "0 postings" is indistinguishable at parse time from a blocked/changed
+    page (selectors matching nothing) — caching that for CACHE_TTL would
+    silently hide a broken scraper for up to 10 minutes. Genuinely-empty
+    listings just get re-fetched next time, which is cheap.
+    """
+    if value:
+        set_cached(key, value)
+    return value

@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { API } from "../api";
+import { API, apiFetch } from "../api";
 
-export default function Stars({ stars, jobId, onUpdate }) {
+export default function Stars({ stars, jobId, onUpdate, addLog }) {
   const [hovered, setHovered] = useState(null);
   const current = hovered ?? stars ?? 0;
   return (
@@ -11,10 +11,13 @@ export default function Stars({ stars, jobId, onUpdate }) {
           onClick={async e => {
             e.stopPropagation();
             const next = n === stars ? 0 : n;
-            await fetch(`${API}/jobs/${jobId}/stars`, {
-              method:"PATCH", headers:{"Content-Type":"application/json"},
-              body: JSON.stringify({stars: next}),
-            });
+            try {
+              const r = await apiFetch(`${API}/jobs/${jobId}/stars`, {
+                method:"PATCH", headers:{"Content-Type":"application/json"},
+                body: JSON.stringify({stars: next}),
+              });
+              if (!r.ok) { addLog?.(`✗ Rating failed: ${(await r.text()).slice(0,80)}`); return; }
+            } catch (err) { addLog?.(`✗ ${err.message}`); return; }
             onUpdate();
           }}
           onMouseEnter={() => setHovered(n)}

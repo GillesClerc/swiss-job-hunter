@@ -15,9 +15,9 @@ from typing import AsyncGenerator, Optional
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func
 
@@ -34,6 +34,23 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
+# Exempt from the API-key check below: hit by the Docker healthcheck
+# (docker-compose.yml) without any header, and carries no sensitive data.
+_API_KEY_EXEMPT_PATHS = {"/config"}
+
+
+@app.middleware("http")
+async def api_key_guard(request: Request, call_next):
+    """
+    Optional shared-secret auth. A no-op until API_KEY is set in the
+    environment — set it before exposing this backend on the public
+    internet (the frontend must be rebuilt with a matching VITE_API_KEY).
+    """
+    if settings.api_key and request.url.path not in _API_KEY_EXEMPT_PATHS:
+        if request.headers.get("x-api-key") != settings.api_key:
+            return JSONResponse({"detail": "Invalid or missing API key"}, status_code=401)
+    return await call_next(request)
+
 
 @app.get("/directions")
 def get_directions():
@@ -47,20 +64,17 @@ def get_directions():
 
 @app.get("/config")
 def get_config():
-    from config.settings import Settings
-    s = Settings()
     return {
-        "default_keyword": s.default_keyword,
-        "default_location": s.default_location,
-        "keyword_presets": s.keyword_presets,
+        "default_keyword": settings.default_keyword,
+        "default_location": settings.default_location,
+        "keyword_presets": settings.keyword_presets,
     }
 
 
 @app.get("/presets")
 def get_presets():
     """Return keyword presets configured via KEYWORD_PRESETS in .env."""
-    from config.settings import Settings
-    return Settings().keyword_presets
+    return settings.keyword_presets
 
 
 # ── Profiles ───────────────────────────────────────────────────────────────────
@@ -419,8 +433,8 @@ def get_stats(threshold: float = 0.1):
         "total": total,
         "by_status": by_status,
         "by_source": by_source,
-        "avg_score": float(avg_score) if avg_score else None,
-        "top_score": float(top_score) if top_score else None,
+        "avg_score": float(avg_score) if avg_score is not None else None,
+        "top_score": float(top_score) if top_score is not None else None,
         "above_threshold": above_threshold,
         "threshold": threshold,
     }
@@ -614,19 +628,25 @@ async def run_enrich(req: EnrichRequest):
                 .all()
             )
             import re as _re
+            # Sources whose fetch_full_description expects the full URL rather
+            # than the raw source_job_id when that id happens to be purely
+            # numeric (their scraper stores a numeric id but needs the URL to
+            # resolve the actual detail page). jobs.ch's own numeric ids are
+            # valid inputs to its fetch_full_description as-is — NOT included
+            # here, since substituting the URL for it broke enrich entirely.
+            NUMERIC_ID_NEEDS_URL = {"züri.jobs", "efinancialcareers.ch", "linkedin.com"}
             job_data = []
             for j in jobs:
                 dlen = len(j.description or "")
                 # Resolve the identifier to pass to fetch_full_description:
                 # - UUID source_job_id → pass as-is (jobs.ch style)
                 # - URL source_job_id → pass as-is (züri.jobs new records)
-                # - purely numeric source_job_id → substitute j.url (züri.jobs old,
-                #   efinancialcareers, linkedin store numeric IDs that need the full URL)
+                # - purely numeric source_job_id on NUMERIC_ID_NEEDS_URL sources
+                #   → substitute j.url (they need the full URL to resolve)
                 # - slug source_job_id → pass as-is (swissdevjobs)
                 # - no source_job_id → extract UUID from URL, else use URL
                 sjid = j.source_job_id
-                _uuid_re = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-                if sjid and sjid.isdigit() and j.url:
+                if sjid and sjid.isdigit() and j.url and req.source in NUMERIC_ID_NEEDS_URL:
                     sjid = j.url
                 elif not sjid and j.url:
                     m = _re.search(r'/detail/([a-f0-9-]{36})', j.url)
@@ -654,6 +674,12 @@ async def run_enrich(req: EnrichRequest):
             "ABB": "scrapers.workday_generic.ABBScraper",
             "Hitachi Energy": "scrapers.workday_generic.HitachiEnergyScraper",
             "Logitech": "scrapers.workday_generic.LogitechScraper",
+            # BKW, Romande Énergie, Juice, Move, La Goule are intentionally absent:
+            # BKW's listing API has no per-job description to fetch beyond what
+            # scrape() already synthesizes; Romande Énergie's `introduction` field
+            # already IS the full description at scrape time; Juice/Move/La Goule
+            # have no confirmed detail-page structure to enrich from (0 live
+            # postings observed at implementation time).
         }
 
         scraper_path = scraper_map.get(req.source)
@@ -781,7 +807,7 @@ async def run_analyze(req: AnalyzeRequest):
             jobs = query.order_by(Job.scraped_at.desc()).limit(lim).all()
             job_data = [(j.id, j.title, j.description) for j in jobs]
 
-        threshold = req.min_score if not req.llm else min(req.min_score, 0.2)
+        threshold = req.min_score
         yield f"Analyzing {len(job_data)} jobs (mode: {'LLM' if req.llm else 'keyword'}, concurrency: {req.concurrency if req.llm else 1})..."
         if not job_data:
             yield "✓ Nothing to score"
@@ -1232,7 +1258,7 @@ def mark_applied(job_id: int, body: dict):
 
 
 @app.post("/jobs/{job_id}/events")
-def add_event(job_id: int, body: dict, response: Response):
+def add_event(job_id: int, body: dict):
     """Add any timeline event (interview, offer, rejection, note...)."""
     from db.session import get_session
     from db.models import Job, JobStatus, JobEvent, ApplicationEvent
@@ -1274,7 +1300,6 @@ def add_event(job_id: int, body: dict, response: Response):
             note=note,
             occurred_at=occurred_at,
         ))
-    response.headers["Access-Control-Allow-Origin"] = "*"
     return {"ok": True}
 
 
@@ -1318,9 +1343,13 @@ def get_tracker():
             .order_by(Job.updated_at.desc())
             .all()
         )
+        apps_by_job = {
+            a.job_id: a
+            for a in session.query(Application).filter(Application.job_id.in_([j.id for j in jobs]))
+        }
         result = []
         for j in jobs:
-            app = session.query(Application).filter(Application.job_id == j.id).first()
+            app = apps_by_job.get(j.id)
             result.append({
                 "id": j.id,
                 "title": j.title,

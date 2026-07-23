@@ -7,11 +7,13 @@ FROM node:20-alpine AS build
 
 WORKDIR /app
 
-# VITE_API_BASE_URL is inlined into the bundle at build time (Vite reads
-# import.meta.env.VITE_*). Defaults to localhost so local compose works
-# unchanged; override via build arg for remote deploys.
+# VITE_API_BASE_URL / VITE_API_KEY are inlined into the bundle at build time
+# (Vite reads import.meta.env.VITE_*). Defaults keep local compose working
+# unchanged; override via build args for remote deploys.
 ARG VITE_API_BASE_URL=http://localhost:8765
+ARG VITE_API_KEY=
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+ENV VITE_API_KEY=$VITE_API_KEY
 
 # Install deps from the lockfile for reproducible builds.
 COPY package.json package-lock.json ./

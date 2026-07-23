@@ -8,11 +8,10 @@ thin subclasses that only set the tenant/site config below.
 """
 from __future__ import annotations
 
-import re
 from typing import AsyncGenerator, Optional
 
 from scrapers.base import BaseScraper, ScrapedJob
-from scrapers.company_common import get_cached, set_cached
+from scrapers.company_common import get_cached, set_cached_if_nonempty
 
 PAGE_SIZE = 20
 
@@ -62,8 +61,7 @@ class WorkdayScraper(BaseScraper):
             if offset >= total or not batch:
                 break
 
-        set_cached(cache_key, postings)
-        return postings
+        return set_cached_if_nonempty(cache_key, postings)
 
     @staticmethod
     def _normalize_job_path(external_path: str) -> str:
@@ -83,22 +81,23 @@ class WorkdayScraper(BaseScraper):
         postings = await self._fetch_all_postings()
 
         for posting in postings:
-            title = posting.get("title", "")
-            external_path = self._normalize_job_path(posting.get("externalPath", ""))
-            job_id_match = re.search(r"_(R\d+|JR\d+|\d+)$", external_path)
-            source_job_id = job_id_match.group(1) if job_id_match else external_path
+            try:
+                title = posting.get("title") or ""
+                external_path = self._normalize_job_path(posting.get("externalPath") or "")
+                locations_text = posting.get("locationsText") or location or "Switzerland"
 
-            locations_text = posting.get("locationsText") or location or "Switzerland"
-
-            yield ScrapedJob(
-                title=title,
-                company=self._company_display,
-                location=locations_text,
-                description=f"{title} — {locations_text}",  # short preview; Enrich fetches the real JD
-                url=f"{self._base_url}/en-US/{self._site}{external_path}",
-                source=self.source_name,
-                source_job_id=external_path,  # kept as the path — used verbatim by fetch_full_description
-            )
+                yield ScrapedJob(
+                    title=title,
+                    company=self._company_display,
+                    location=locations_text,
+                    description=f"{title} — {locations_text}",  # short preview; Enrich fetches the real JD
+                    url=f"{self._base_url}/en-US/{self._site}{external_path}",
+                    source=self.source_name,
+                    source_job_id=external_path,  # kept as the path — used verbatim by fetch_full_description
+                )
+            except Exception:
+                # One malformed posting shouldn't drop the rest of the tenant's listing.
+                continue
 
     async def fetch_full_description(self, external_path: str):
         """Fetch the full job description for the Enrich pipeline."""

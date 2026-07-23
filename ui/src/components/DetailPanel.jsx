@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { API } from "../api";
+import { API, apiFetch } from "../api";
 import { STATUS_META, inp } from "../constants";
 import Stars from "./Stars";
 import Badge from "./Badge";
@@ -39,7 +39,7 @@ export default function DetailPanel({ job, profileName, addLog, onRefresh }) {
   const lookupCompany = useCallback(async (name) => {
     if (!name) return;
     try {
-      const r = await fetch(`${API}/companies/${encodeURIComponent(name)}`);
+      const r = await apiFetch(`${API}/companies/${encodeURIComponent(name)}`);
       if (r.ok) {
         const d = await r.json();
         if (d.summary) { setCompanyCache(p => ({...p, [name]: d.summary})); return; }
@@ -58,7 +58,7 @@ export default function DetailPanel({ job, profileName, addLog, onRefresh }) {
     setTailorResult(null);
     if (companyCache[job.company] === undefined) lookupCompany(job.company);
     if (!["viewed","considering","applied","interviewing","offer","rejected"].includes(job.status)) {
-      fetch(`${API}/jobs/${job.id}/view`, { method:"POST" }).then(onRefresh);
+      apiFetch(`${API}/jobs/${job.id}/view`, { method:"POST" }).then(onRefresh);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job?.id]);
@@ -70,10 +70,11 @@ export default function DetailPanel({ job, profileName, addLog, onRefresh }) {
   const triggerCompanyLookup = async (name) => {
     setLookingUpCompany(true);
     try {
-      const r = await fetch(`${API}/companies/lookup`, {
+      const r = await apiFetch(`${API}/companies/lookup`, {
         method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({name}),
       });
+      if (!r.ok) { addLog(`✗ Company lookup failed: ${(await r.text()).slice(0,100)}`); return; }
       const d = await r.json();
       if (d.summary) { setCompanyCache(p => ({...p, [name]: d.summary})); addLog(`✓ Company info: ${name}`); }
     } catch (e) { addLog(`✗ ${e.message}`); }
@@ -85,10 +86,11 @@ export default function DetailPanel({ job, profileName, addLog, onRefresh }) {
     setTranslatedDesc("");
     setShowOriginalDesc(false);
     try {
-      const r = await fetch(`${API}/run/translate`, {
+      const r = await apiFetch(`${API}/run/translate`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ job_id: job.id, target }),
       });
+      if (!r.ok) { addLog(`✗ Translation failed: ${(await r.text()).slice(0,100)}`); setTranslating(false); return; }
       const d = await r.json();
       if (d.translated) { setTranslatedDesc(d.translated); addLog(`✓ Translated to ${target === "en" ? "English" : "中文"}`); }
       else addLog("✗ Translation failed");
@@ -99,10 +101,11 @@ export default function DetailPanel({ job, profileName, addLog, onRefresh }) {
   const generateCover = async () => {
     setLoading(p=>({...p,cover:true}));
     try {
-      const r = await fetch(`${API}/run/cover`,{
+      const r = await apiFetch(`${API}/run/cover`,{
         method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({job_id:job.id,language:coverLang}),
       });
+      if (!r.ok) { addLog(`✗ Cover letter failed: ${(await r.text()).slice(0,150)}`); setLoading(p=>({...p,cover:false})); return; }
       const d = await r.json();
       setCoverLetter(d.letter||"");
       setRightTab("apply");
@@ -115,10 +118,11 @@ export default function DetailPanel({ job, profileName, addLog, onRefresh }) {
     setLoading(p=>({...p, tailor:true}));
     setTailorResult(null);
     try {
-      const r = await fetch(`${API}/run/tailor-cv`, {
+      const r = await apiFetch(`${API}/run/tailor-cv`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({job_id: job.id, direction: profileName || job.direction || null}),
       });
+      if (!r.ok) { addLog(`✗ Tailor CV failed: ${(await r.text()).slice(0,150)}`); setLoading(p=>({...p, tailor:false})); return; }
       const d = await r.json();
       if (d.error) { addLog(`✗ Tailor CV: ${d.error}`); }
       else { setTailorResult(d); setRightTab("tailor"); addLog("✓ CV tailoring done"); }
@@ -127,10 +131,13 @@ export default function DetailPanel({ job, profileName, addLog, onRefresh }) {
   };
 
   const updateStatus = async (status) => {
-    await fetch(`${API}/jobs/${job.id}/status`,{
-      method:"PATCH",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({status}),
-    });
+    try {
+      const r = await apiFetch(`${API}/jobs/${job.id}/status`,{
+        method:"PATCH",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({status}),
+      });
+      if (!r.ok) { addLog(`✗ Status update failed: ${(await r.text()).slice(0,100)}`); return; }
+    } catch (e) { addLog(`✗ ${e.message}`); return; }
     addLog(`✓ #${job.id} → ${status}`);
     onRefresh();
   };
@@ -155,7 +162,7 @@ export default function DetailPanel({ job, profileName, addLog, onRefresh }) {
               <span style={{fontSize:11,color:"#4a7a60"}}>{job.company} · {job.location}</span>
             </div>
             <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-              <Stars stars={job.user_stars} jobId={job.id} onUpdate={onRefresh}/>
+              <Stars stars={job.user_stars} jobId={job.id} onUpdate={onRefresh} addLog={addLog}/>
               <span style={{fontSize:9,color:"#6b8c7a",fontFamily:"monospace"}}>
                 {job.user_stars ? `${job.user_stars}/5` : "rate this job"}
               </span>
@@ -164,7 +171,7 @@ export default function DetailPanel({ job, profileName, addLog, onRefresh }) {
               <Badge status={job.status}/>
               {job.employment_type&&<span style={{fontSize:9,color:"#5a7a68",background:"#d4dece",padding:"2px 6px",borderRadius:3}}>{job.employment_type}</span>}
               {job.language_required&&<span style={{fontSize:9,color:"#5a7a68",background:"#d4dece",padding:"2px 6px",borderRadius:3}}>lang: {job.language_required}</span>}
-              {job.match_score!=null&&<span style={{fontSize:9,color:"#2e7d52"}}>compétence {Math.round(job.match_score*100)}%</span>}
+              {job.match_score!=null&&<span style={{fontSize:9,color:job.match_score>=0.7?"#34d399":job.match_score>=0.4?"#f59e0b":"#f87171"}}>compétence {Math.round(job.match_score*100)}%</span>}
               {job.wish_score!=null&&<span style={{fontSize:9,color:"#a78bfa"}}>envie {Math.round(job.wish_score*100)}%</span>}
             </div>
           </div>
@@ -280,7 +287,7 @@ export default function DetailPanel({ job, profileName, addLog, onRefresh }) {
         <div style={{flex:1,overflowY:"auto",padding:18}}>
           <div style={{fontSize:12,fontWeight:700,color:"#1a2e20",marginBottom:2}}>{job.title}</div>
           <div style={{fontSize:10,color:"#5a7a68",marginBottom:16}}>{job.company}</div>
-          <Timeline jobId={job.id} onRefresh={onRefresh}/>
+          <Timeline jobId={job.id} onRefresh={onRefresh} addLog={addLog}/>
         </div>
       )}
 

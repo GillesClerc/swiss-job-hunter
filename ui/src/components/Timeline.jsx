@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
-import { API } from "../api";
+import { API, apiFetch } from "../api";
 import { EVENT_META, ADDABLE_EVENTS, inp } from "../constants";
 import Btn from "./Btn";
 
-export default function Timeline({ jobId, onRefresh }) {
+export default function Timeline({ jobId, onRefresh, addLog }) {
   const [events, setEvents] = useState([]);
   const [adding, setAdding] = useState(false);
   const [evType, setEvType] = useState("note");
@@ -11,18 +11,23 @@ export default function Timeline({ jobId, onRefresh }) {
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
-    const r = await fetch(`${API}/jobs/${jobId}/events`);
-    if (r.ok) setEvents(await r.json());
-  }, [jobId]);
+    try {
+      const r = await apiFetch(`${API}/jobs/${jobId}/events`);
+      if (r.ok) setEvents(await r.json());
+    } catch (e) { addLog?.(`✗ ${e.message}`); }
+  }, [jobId, addLog]);
 
   useEffect(() => { load(); }, [load]);
 
   const addEvent = async () => {
     setLoading(true);
-    await fetch(`${API}/jobs/${jobId}/events`, {
-      method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({ event_type:evType, note:evNote }),
-    });
+    try {
+      const r = await apiFetch(`${API}/jobs/${jobId}/events`, {
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ event_type:evType, note:evNote }),
+      });
+      if (!r.ok) { addLog?.(`✗ Add event failed: ${(await r.text()).slice(0,80)}`); setLoading(false); return; }
+    } catch (e) { addLog?.(`✗ ${e.message}`); setLoading(false); return; }
     setEvNote(""); setAdding(false);
     await load(); onRefresh?.();
     setLoading(false);

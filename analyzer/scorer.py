@@ -117,17 +117,6 @@ class MatchResult:
     provider: str = "keyword"
 
 
-def _extract_weighted(text: str) -> dict[str, float]:
-    """Return {skill_label: weight} for all patterns found in text."""
-    found = {}
-    for pat, weight, label in _COMPILED:
-        if pat.search(text):
-            # Use a clean label
-            clean = label.replace("\\b", "").replace("\\.", ".").replace("?", "").strip()
-            found[clean] = weight
-    return found
-
-
 def _compile_dynamic(raw: list[dict]) -> list[tuple[re.Pattern, float, str]]:
     """Convert LLM-extracted keyword dicts to compiled pattern tuples."""
     result = []
@@ -365,7 +354,7 @@ Return ONLY valid JSON (no markdown):
 
     wish_score = data.get("wish_score")
     return DualMatchResult(
-        skill_score=float(data.get("skill_score", 0.0)),
+        skill_score=float(data.get("skill_score") or 0.0),
         skill_explanation=data.get("skill_explanation", ""),
         matched_skills=data.get("matched_skills", []),
         missing_skills=data.get("missing_skills", []),
