@@ -95,6 +95,19 @@ class BaseScraper(ABC):
         response.raise_for_status()
         return response
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True,
+    )
+    async def _post(self, url: str, **kwargs) -> httpx.Response:  # type: ignore[override]
+        """POST variant of `_fetch` — used by JSON APIs (e.g. Workday CxS)."""
+        client = await self._get_client()
+        await self._polite_delay()
+        response = await client.post(url, **kwargs)
+        response.raise_for_status()
+        return response
+
     async def _polite_delay(self) -> None:
         """Random delay to avoid hammering servers."""
         delay = random.uniform(settings.scraper_delay_min, settings.scraper_delay_max)

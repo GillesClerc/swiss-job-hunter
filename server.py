@@ -647,6 +647,13 @@ async def run_enrich(req: EnrichRequest):
             "jobup.ch": "scrapers.jobup_ch.JobupChScraper",
             "linkedin.com": "scrapers.linkedin_rss.LinkedInRssScraper",
             "michael-page.ch": "scrapers.michael_page.MichaelPageScraper",
+            "Helion": "scrapers.helion.HelionScraper",
+            "Swisscom": "scrapers.workday_generic.SwisscomScraper",
+            "Swisscom Broadcast": "scrapers.workday_generic.SwisscomBroadcastScraper",
+            "Samsung": "scrapers.workday_generic.SamsungScraper",
+            "ABB": "scrapers.workday_generic.ABBScraper",
+            "Hitachi Energy": "scrapers.workday_generic.HitachiEnergyScraper",
+            "Logitech": "scrapers.workday_generic.LogitechScraper",
         }
 
         scraper_path = scraper_map.get(req.source)

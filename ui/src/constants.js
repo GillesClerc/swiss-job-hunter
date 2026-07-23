@@ -26,9 +26,15 @@ export const EVENT_META = {
   note:           { icon: "📝",  label: "Note",              color: "#4a7a60" },
 };
 
-export const SOURCES = ["jobs.ch","jobscout24.ch","swissdevjobs.ch","jobup.ch","züri.jobs","efinancialcareers.ch","linkedin.com","michael-page.ch"];
+export const JOB_BOARD_SOURCES = ["jobs.ch","jobscout24.ch","swissdevjobs.ch","jobup.ch","züri.jobs","efinancialcareers.ch","linkedin.com","michael-page.ch"];
 
-export const ENRICHABLE = SOURCES;
+// Per-company career-page scrapers ("reliable" tier — no headless browser needed)
+export const COMPANY_SOURCES = ["BKW","Romande Énergie","Helion","Juice","Move","La Goule","Swisscom","Swisscom Broadcast","Samsung","ABB","Hitachi Energy","Logitech"];
+
+export const SOURCES = [...JOB_BOARD_SOURCES, ...COMPANY_SOURCES];
+
+// Sources whose scraper implements fetch_full_description (used by Enrich)
+export const ENRICHABLE = [...JOB_BOARD_SOURCES, "Helion","Swisscom","Swisscom Broadcast","Samsung","ABB","Hitachi Energy","Logitech"];
 
 export const LANGUAGES = [
   { id: "all", label: "ALL" },
