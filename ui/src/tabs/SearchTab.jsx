@@ -146,6 +146,21 @@ export default function SearchTab() {
   const currentKeywords = useCallback(() =>
     searchKwInput.trim() ? [...searchKws, searchKwInput.trim()] : searchKws, [searchKws, searchKwInput]);
 
+  // Splits on every comma in the value (not just a trailing one) so pasting a
+  // whole comma-separated list at once adds each keyword as its own tag.
+  const handleKwInput = useCallback((v) => {
+    if (!v.includes(",")) { setSearchKwInput(v); return; }
+    const parts = v.split(",");
+    const remainder = parts.pop().trim();
+    const toAdd = [];
+    for (const raw of parts) {
+      const kw = raw.trim();
+      if (kw && !searchKws.includes(kw) && !toAdd.includes(kw)) toAdd.push(kw);
+    }
+    if (toAdd.length) setSearchKws(p => [...p, ...toAdd]);
+    setSearchKwInput(remainder);
+  }, [searchKws]);
+
   const scrape = useCallback(() => {
     const kws = currentKeywords();
     if (!kws.length) { addLog("✗ No keywords — pick a profile with search keywords, or add some"); return Promise.resolve(); }
@@ -235,7 +250,7 @@ export default function SearchTab() {
                 ))}
               </div>
               <input value={searchKwInput}
-                onChange={e=>{const v=e.target.value;if(v.endsWith(",")){const kw=v.slice(0,-1).trim();if(kw&&!searchKws.includes(kw))setSearchKws(p=>[...p,kw]);setSearchKwInput("");}else setSearchKwInput(v);}}
+                onChange={e=>handleKwInput(e.target.value)}
                 onKeyDown={e=>{if(e.key==="Enter"){const kw=searchKwInput.trim();if(kw&&!searchKws.includes(kw))setSearchKws(p=>[...p,kw]);setSearchKwInput("");}else if(e.key==="Backspace"&&!searchKwInput&&searchKws.length>0)setSearchKws(p=>p.slice(0,-1));}}
                 placeholder={searchKws.length?"add keyword (Enter/,)":"keyword (Enter to add)"}
                 style={{...inp,marginBottom:6}}/>

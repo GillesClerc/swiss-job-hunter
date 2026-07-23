@@ -132,6 +132,21 @@ export default function ProfilesTab() {
     setKwInput("");
   };
 
+  // Splits on every comma in the value (not just a trailing one) so pasting a
+  // whole comma-separated list at once adds each keyword as its own tag.
+  const handleKwInput = (v) => {
+    if (!v.includes(",")) { setKwInput(v); return; }
+    const parts = v.split(",");
+    const remainder = parts.pop().trim();
+    const toAdd = [];
+    for (const raw of parts) {
+      const kw = raw.trim();
+      if (kw && !searchKeywords.includes(kw) && !toAdd.includes(kw)) toAdd.push(kw);
+    }
+    if (toAdd.length) setSearchKeywords(p => [...p, ...toAdd]);
+    setKwInput(remainder);
+  };
+
   return (
     <div style={{flex:1,display:"flex",overflow:"hidden"}}>
       {/* LEFT: profile list */}
@@ -240,7 +255,7 @@ export default function ProfilesTab() {
                 ))}
               </div>
               <input value={kwInput}
-                onChange={e=>{const v=e.target.value; if(v.endsWith(",")){setKwInput(v.slice(0,-1)); } else setKwInput(v);}}
+                onChange={e=>handleKwInput(e.target.value)}
                 onKeyDown={e=>{
                   if(e.key==="Enter"){ e.preventDefault(); addKeyword(); }
                   else if(e.key===","){ e.preventDefault(); addKeyword(); }
