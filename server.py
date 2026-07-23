@@ -37,14 +37,12 @@ app.add_middleware(
 
 @app.get("/directions")
 def get_directions():
-    import glob
-    from config.settings import settings
-    pattern = str(settings.cv_text_path.parent / "cv_*.txt")
-    dirs = sorted(
-        Path(p).stem[3:]  # strip leading "cv_"
-        for p in glob.glob(pattern)
-    )
-    return dirs
+    """Back-compat: profile names, in the same shape the old file-glob endpoint returned."""
+    from db.session import get_session, init_db
+    from db.models import Profile
+    init_db()
+    with get_session() as session:
+        return sorted(row.name for row in session.query(Profile.name).all())
 
 
 @app.get("/config")
@@ -65,13 +63,13 @@ def get_presets():
     return Settings().keyword_presets
 
 
-# ── CV categories ───────────────────────────────────────────────────────────────
-# A "CV category" is one search direction backed by data/cv_{direction}.txt and a
-# set of LLM-extracted *search* keywords (job-title terms used to scrape), stored
-# at data/cv_search_keywords_{direction}.json. These are distinct from the scoring
-# pre-filter keywords (data/cv_keywords_{direction}.json).
-
-DATA_DIR = settings.cv_text_path.parent
+# ── Profiles ───────────────────────────────────────────────────────────────────
+# A Profile is one search direction: a CV, a free-text "wish" description (mission
+# type / culture / values the candidate is after), LLM-extracted *search* keywords
+# (job-title terms used to scrape), and a cached set of weighted scoring keywords
+# used by fast_score's pre-filter. Profile.name is the slug previously known as
+# "direction" — Job.direction keeps storing that same slug as a loose string tag,
+# with no FK, so nothing else in the pipeline needs to change.
 
 
 def _sanitize_direction(name: str) -> str:
@@ -79,37 +77,6 @@ def _sanitize_direction(name: str) -> str:
     s = (name or "").strip().lower()
     s = re.sub(r"[^a-z0-9_-]+", "_", s).strip("_-")
     return s
-
-
-def _cv_path(direction: str) -> Path:
-    return DATA_DIR / f"cv_{direction}.txt"
-
-
-def _search_kw_path(direction: str) -> Path:
-    return DATA_DIR / f"cv_search_keywords_{direction}.json"
-
-
-def _scoring_kw_path(direction: str) -> Path:
-    return DATA_DIR / f"cv_keywords_{direction}.json"
-
-
-def _read_search_keywords(direction: str) -> list[str]:
-    f = _search_kw_path(direction)
-    if f.exists():
-        try:
-            return list(json.loads(f.read_text(encoding="utf-8")).get("keywords", []))
-        except Exception:
-            return []
-    return []
-
-
-def _write_search_keywords(direction: str, keywords: list[str]) -> list[str]:
-    kws = [str(k).strip() for k in keywords if str(k).strip()]
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _search_kw_path(direction).write_text(
-        json.dumps({"keywords": kws}, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return kws
 
 
 async def _extract_search_keywords_llm(cv_text: str) -> list[str]:
@@ -151,128 +118,220 @@ CV:
     return out[:12]
 
 
-class CVUploadRequest(BaseModel):
-    direction: str
-    content: str
+class ProfileCreateRequest(BaseModel):
+    name: str
+    cv_text: str
+    wish_description: str = ""
+    search_keywords: list[str] = []
 
 
-class KeywordsBody(BaseModel):
-    keywords: list[str]
+class ProfileUpdateRequest(BaseModel):
+    cv_text: Optional[str] = None
+    wish_description: Optional[str] = None
+    search_keywords: Optional[list[str]] = None
 
 
 class RenameBody(BaseModel):
     new_name: str
 
 
-@app.get("/cv-categories")
-def cv_categories():
-    """List every CV category: its direction, saved search keywords, and job count."""
-    import glob
+def _profile_to_dict(row, job_count: int = 0) -> dict:
+    return {
+        "name": row.name,
+        "cv_text": row.cv_text,
+        "wish_description": row.wish_description or "",
+        "search_keywords": list(row.search_keywords or []),
+        "has_scoring_keywords": bool(row.scoring_keywords),
+        "job_count": job_count,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+@app.get("/profiles")
+def list_profiles():
+    """List every profile: name, CV/wish excerpts, search keywords, and job count."""
     from db.session import get_session, init_db
-    from db.models import Job
+    from db.models import Job, Profile
     init_db()
     with get_session() as session:
         counts = dict(
             session.query(Job.direction, func.count(Job.id)).group_by(Job.direction).all()
         )
-    cats = []
-    for p in sorted(glob.glob(str(DATA_DIR / "cv_*.txt"))):
-        direction = Path(p).stem[3:]  # strip leading "cv_"
-        cats.append({
-            "direction": direction,
-            "keywords": _read_search_keywords(direction),
-            "job_count": counts.get(direction, 0),
-        })
-    return cats
+        rows = session.query(Profile).order_by(Profile.name).all()
+        return [_profile_to_dict(row, counts.get(row.name, 0)) for row in rows]
 
 
-@app.post("/cv/upload")
-def cv_upload(req: CVUploadRequest):
-    """Persist an uploaded CV as data/cv_{direction}.txt, creating a category."""
-    direction = _sanitize_direction(req.direction)
-    if not direction:
-        raise HTTPException(400, "Invalid direction name")
-    if not req.content.strip():
+@app.post("/profiles")
+def create_profile(req: ProfileCreateRequest):
+    from db.session import get_session, init_db
+    from db.models import Profile
+    init_db()
+    name = _sanitize_direction(req.name)
+    if not name:
+        raise HTTPException(400, "Invalid profile name")
+    if not req.cv_text.strip():
         raise HTTPException(400, "Empty CV content")
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _cv_path(direction).write_text(req.content, encoding="utf-8")
-    return {"ok": True, "direction": direction}
+    with get_session() as session:
+        if session.query(Profile).filter(Profile.name == name).first():
+            raise HTTPException(409, f"Profile '{name}' already exists")
+        row = Profile(
+            name=name,
+            cv_text=req.cv_text,
+            wish_description=req.wish_description or None,
+            search_keywords=req.search_keywords or [],
+        )
+        session.add(row)
+        session.flush()
+        return _profile_to_dict(row)
 
 
-@app.get("/cv/{direction}/search-keywords")
-def get_search_keywords(direction: str):
-    direction = _sanitize_direction(direction)
-    return {"direction": direction, "keywords": _read_search_keywords(direction)}
+@app.get("/profiles/{name}")
+def get_profile(name: str):
+    from db.session import get_session
+    from db.models import Job, Profile
+    name = _sanitize_direction(name)
+    with get_session() as session:
+        row = session.query(Profile).filter(Profile.name == name).first()
+        if not row:
+            raise HTTPException(404, "Profile not found")
+        count = session.query(func.count(Job.id)).filter(Job.direction == name).scalar() or 0
+        return _profile_to_dict(row, count)
 
 
-@app.put("/cv/{direction}/search-keywords")
-def put_search_keywords(direction: str, body: KeywordsBody):
-    direction = _sanitize_direction(direction)
-    if not _cv_path(direction).exists():
-        raise HTTPException(404, "CV category not found")
-    return {"direction": direction, "keywords": _write_search_keywords(direction, body.keywords)}
+@app.put("/profiles/{name}")
+def update_profile(name: str, req: ProfileUpdateRequest):
+    from db.session import get_session
+    from db.models import Profile
+    name = _sanitize_direction(name)
+    with get_session() as session:
+        row = session.query(Profile).filter(Profile.name == name).first()
+        if not row:
+            raise HTTPException(404, "Profile not found")
+        if req.cv_text is not None:
+            if not req.cv_text.strip():
+                raise HTTPException(400, "Empty CV content")
+            row.cv_text = req.cv_text
+        if req.wish_description is not None:
+            row.wish_description = req.wish_description or None
+        if req.search_keywords is not None:
+            row.search_keywords = req.search_keywords
+        session.flush()
+        return _profile_to_dict(row)
 
 
-@app.post("/cv/{direction}/search-keywords/extract")
-async def extract_search_keywords(direction: str):
+@app.post("/profiles/{name}/search-keywords/extract")
+async def extract_search_keywords(name: str):
     """Run the LLM to derive search keywords from the CV, then persist them."""
-    from analyzer.scorer import load_cv_text
-    direction = _sanitize_direction(direction)
-    try:
-        cv_text = load_cv_text(direction=direction)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
+    from db.session import get_session
+    from db.models import Profile
+    name = _sanitize_direction(name)
+    with get_session() as session:
+        row = session.query(Profile).filter(Profile.name == name).first()
+        if not row:
+            raise HTTPException(404, "Profile not found")
+        cv_text = row.cv_text
     keywords = await _extract_search_keywords_llm(cv_text)
     if not keywords:
         raise HTTPException(502, "Keyword extraction returned nothing — check LLM config")
-    return {"direction": direction, "keywords": _write_search_keywords(direction, keywords)}
+    with get_session() as session:
+        row = session.query(Profile).filter(Profile.name == name).first()
+        row.search_keywords = keywords
+        session.flush()
+        return _profile_to_dict(row)
 
 
-@app.patch("/cv-categories/{direction}")
-def rename_category(direction: str, body: RenameBody):
-    """Rename a category: CV file, keyword caches, and the direction tag on jobs."""
+@app.patch("/profiles/{name}")
+def rename_profile(name: str, body: RenameBody):
+    """Rename a profile and re-tag its jobs' `direction` to match."""
     from db.session import get_session
-    from db.models import Job
-    old = _sanitize_direction(direction)
+    from db.models import Job, Profile
+    old = _sanitize_direction(name)
     new = _sanitize_direction(body.new_name)
     if not new:
         raise HTTPException(400, "Invalid new name")
-    if not _cv_path(old).exists():
-        raise HTTPException(404, "CV category not found")
-    if old == new:
-        return {"direction": new}
-    if _cv_path(new).exists():
-        raise HTTPException(409, f"Category '{new}' already exists")
-    _cv_path(old).rename(_cv_path(new))
-    for src, dst in ((_search_kw_path(old), _search_kw_path(new)),
-                     (_scoring_kw_path(old), _scoring_kw_path(new))):
-        if src.exists():
-            src.rename(dst)
     with get_session() as session:
+        row = session.query(Profile).filter(Profile.name == old).first()
+        if not row:
+            raise HTTPException(404, "Profile not found")
+        if old == new:
+            return _profile_to_dict(row)
+        if session.query(Profile).filter(Profile.name == new).first():
+            raise HTTPException(409, f"Profile '{new}' already exists")
+        row.name = new
         session.query(Job).filter(Job.direction == old).update({Job.direction: new})
-    return {"direction": new}
+        session.flush()
+        return _profile_to_dict(row)
 
 
-@app.delete("/cv-categories/{direction}")
-def delete_category(direction: str):
-    """Delete a category's CV file and keyword caches. Jobs are kept but untagged."""
+@app.delete("/profiles/{name}")
+def delete_profile(name: str):
+    """Delete a profile. Jobs are kept but untagged (direction set to null)."""
     from db.session import get_session
-    from db.models import Job
-    d = _sanitize_direction(direction)
-    if not _cv_path(d).exists():
-        raise HTTPException(404, "CV category not found")
-    _cv_path(d).unlink()
-    for f in (_search_kw_path(d), _scoring_kw_path(d)):
-        if f.exists():
-            f.unlink()
+    from db.models import Job, Profile
+    name = _sanitize_direction(name)
     with get_session() as session:
-        session.query(Job).filter(Job.direction == d).update({Job.direction: None})
+        row = session.query(Profile).filter(Profile.name == name).first()
+        if not row:
+            raise HTTPException(404, "Profile not found")
+        session.delete(row)
+        session.query(Job).filter(Job.direction == name).update({Job.direction: None})
+    return {"ok": True}
+
+
+# ── Watched companies ───────────────────────────────────────────────────────────
+# Plain CRUD placeholder — no effect on scraping/filtering yet. Meant to back
+# future per-company scrapers (career pages scraped directly at the source).
+
+class WatchedCompanyRequest(BaseModel):
+    name: str
+    notes: str = ""
+
+
+@app.get("/watched-companies")
+def list_watched_companies():
+    from db.session import get_session, init_db
+    from db.models import WatchedCompany
+    init_db()
+    with get_session() as session:
+        rows = session.query(WatchedCompany).order_by(WatchedCompany.name).all()
+        return [{"id": r.id, "name": r.name, "notes": r.notes or ""} for r in rows]
+
+
+@app.post("/watched-companies")
+def add_watched_company(req: WatchedCompanyRequest):
+    from db.session import get_session, init_db
+    from db.models import WatchedCompany
+    init_db()
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(400, "Company name required")
+    with get_session() as session:
+        if session.query(WatchedCompany).filter(WatchedCompany.name == name).first():
+            raise HTTPException(409, f"'{name}' is already watched")
+        row = WatchedCompany(name=name, notes=req.notes or None)
+        session.add(row)
+        session.flush()
+        return {"id": row.id, "name": row.name, "notes": row.notes or ""}
+
+
+@app.delete("/watched-companies/{company_id}")
+def delete_watched_company(company_id: int):
+    from db.session import get_session
+    from db.models import WatchedCompany
+    with get_session() as session:
+        row = session.get(WatchedCompany, company_id)
+        if not row:
+            raise HTTPException(404, "Not found")
+        session.delete(row)
     return {"ok": True}
 
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
-def get_jobs_query(status: str = "all", q: str = "", direction: str = "all", min_stars: int = 0):
+def get_jobs_query(
+    status: str = "all", q: str = "", direction: str = "all", min_stars: int = 0,
+    language: str = "all",
+):
     from db.session import get_session
     from db.models import Job
     from sqlalchemy import or_
@@ -283,6 +342,8 @@ def get_jobs_query(status: str = "all", q: str = "", direction: str = "all", min
             query = query.filter(Job.status == status)
         if direction != "all":
             query = query.filter(Job.direction == direction)
+        if language != "all":
+            query = query.filter(Job.language_required.ilike(f"%{language}%"))
         if q:
             query = query.filter(
                 or_(
@@ -306,9 +367,12 @@ def get_jobs_query(status: str = "all", q: str = "", direction: str = "all", min
                 "source_job_id": j.source_job_id,
                 "salary_raw": j.salary_raw,
                 "employment_type": j.employment_type,
+                "language_required": j.language_required,
                 "status": j.status,
                 "match_score": j.match_score,
                 "match_explanation": j.match_explanation,
+                "wish_score": j.wish_score,
+                "wish_explanation": j.wish_explanation,
                 "user_stars": j.user_stars,
                 "direction": j.direction,
                 "posted_at": j.posted_at.isoformat() if j.posted_at else None,
@@ -321,10 +385,13 @@ def get_jobs_query(status: str = "all", q: str = "", direction: str = "all", min
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.get("/jobs")
-def list_jobs(status: str = "all", q: str = "", direction: str = "all", min_stars: int = 0):
+def list_jobs(
+    status: str = "all", q: str = "", direction: str = "all", min_stars: int = 0,
+    language: str = "all",
+):
     from db.session import init_db
     init_db()
-    return get_jobs_query(status, q, direction, min_stars)
+    return get_jobs_query(status, q, direction, min_stars, language)
 
 
 @app.get("/stats")
@@ -626,13 +693,13 @@ async def run_enrich(req: EnrichRequest):
         yield f"✓ Enriched {updated}/{len(to_enrich)} jobs"
 
         if req.rescore_llm and enriched_ids:
-            from analyzer.scorer import llm_score, load_cv_text
+            from analyzer.scorer import score_job, load_profile
             from db.models import JobStatus
             yield f"→ LLM scoring {len(enriched_ids)} newly enriched jobs..."
             try:
-                cv_text = load_cv_text(direction=req.direction or None)
+                profile = load_profile(req.direction or None)
             except FileNotFoundError as e:
-                yield f"✗ CV not found: {e}"
+                yield f"✗ {e}"
                 return
             scored = 0
             for job_id in enriched_ids:
@@ -644,18 +711,22 @@ async def run_enrich(req: EnrichRequest):
                         if job.match_score is not None:
                             continue  # already scored, skip
                         title, desc = job.title, job.description or ""
-                    result = await llm_score(cv_text, title, desc)
+                    result = await score_job(profile.cv_text, profile.wish_description, title, desc)
                     with get_session() as session:
                         job = session.get(Job, job_id)
                         if job:
-                            job.match_score = result.score
-                            job.match_explanation = result.explanation
-                            if result.score < 0.1:
+                            job.match_score = result.skill_score
+                            job.match_explanation = result.skill_explanation
+                            job.wish_score = result.wish_score
+                            job.wish_explanation = result.wish_explanation
+                            if result.language_required:
+                                job.language_required = result.language_required
+                            if result.skill_score < 0.1:
                                 job.status = JobStatus.ARCHIVED
-                            elif result.score >= 0.6:
+                            elif result.skill_score >= 0.6:
                                 job.status = JobStatus.SHORTLISTED
                     scored += 1
-                    yield f"  🧠 job #{job_id} — {round(result.score * 100)}%"
+                    yield f"  🧠 job #{job_id} — {round(result.skill_score * 100)}%"
                 except Exception as e:
                     yield f"  ✗ job #{job_id} score error: {str(e)[:80]}"
             yield f"✓ LLM scored {scored}/{len(enriched_ids)} jobs"
@@ -678,15 +749,17 @@ async def run_analyze(req: AnalyzeRequest):
     async def gen():
         import asyncio
         from asyncio import Queue
-        from analyzer.scorer import fast_score, llm_score, load_cv_text, load_cv_keywords
+        from analyzer.scorer import fast_score, score_job, load_profile, load_cv_keywords
         from db.models import Job, JobStatus
         from db.session import get_session
 
         try:
-            cv_text = load_cv_text(direction=req.direction or None)
+            profile = load_profile(req.direction or None)
         except FileNotFoundError as e:
             yield f"✗ {e}"
             return
+        cv_text = profile.cv_text
+        wish_text = profile.wish_description
 
         with get_session() as session:
             statuses = list(JobStatus)  # all statuses when rescoring
@@ -709,9 +782,9 @@ async def run_analyze(req: AnalyzeRequest):
         shortlisted = 0
 
         if req.llm:
-            # Load dynamic CV keywords once for pre-filter (cached per CV file)
+            # Load dynamic CV keywords once for pre-filter (cached on the Profile row)
             yield f"→ Loading CV keywords for pre-filter..."
-            cv_keywords = await load_cv_keywords(cv_text, direction=req.direction or None)
+            cv_keywords = await load_cv_keywords(profile.name, cv_text)
             yield f"→ Loaded {len(cv_keywords)} keywords, pre-filter threshold: {req.min_keyword_score:.0%}"
 
             queue: Queue = Queue()
@@ -736,22 +809,27 @@ async def run_analyze(req: AnalyzeRequest):
                             skipped += 1
                             await queue.put(f"– #{job_id} {kw_result.score:.0%} (skipped) — {title[:45]}")
                         else:
-                            result = await llm_score(cv_text, title, description or "")
+                            result = await score_job(cv_text, wish_text, title, description or "")
                             with get_session() as session:
                                 job = session.get(Job, job_id)
                                 if job:
-                                    job.match_score = result.score
-                                    job.match_explanation = result.explanation
-                                    if result.score >= threshold:
+                                    job.match_score = result.skill_score
+                                    job.match_explanation = result.skill_explanation
+                                    job.wish_score = result.wish_score
+                                    job.wish_explanation = result.wish_explanation
+                                    if result.language_required:
+                                        job.language_required = result.language_required
+                                    if result.skill_score >= threshold:
                                         job.status = JobStatus.SHORTLISTED
                                         shortlisted += 1
-                                    elif result.score < req.archive_below:
+                                    elif result.skill_score < req.archive_below:
                                         job.status = JobStatus.ARCHIVED
                                     else:
                                         job.status = JobStatus.ANALYZED
-                            score_pct = f"{result.score:.0%}"
-                            icon = "⭐" if result.score >= req.min_score else ("✗" if result.score < req.archive_below else "·")
-                            await queue.put(f"{icon} #{job_id} {score_pct} — {title[:45]}")
+                            score_pct = f"{result.skill_score:.0%}"
+                            wish_pct = f", envie {result.wish_score:.0%}" if result.wish_score is not None else ""
+                            icon = "⭐" if result.skill_score >= req.min_score else ("✗" if result.skill_score < req.archive_below else "·")
+                            await queue.put(f"{icon} #{job_id} {score_pct}{wish_pct} — {title[:45]}")
                     except Exception as e:
                         await queue.put(f"✗ #{job_id} error: {e}")
                     finally:
@@ -986,7 +1064,7 @@ class CoverRequest(BaseModel):
 
 @app.post("/run/cover")
 async def run_cover(req: CoverRequest):
-    from analyzer.scorer import load_cv_text
+    from analyzer.scorer import load_profile
     from llm.cover_letter import generate_cover_letter
     from db.models import Job
     from db.session import get_session
@@ -998,7 +1076,10 @@ async def run_cover(req: CoverRequest):
         # Detach
         session.expunge(job)
 
-    cv_text = load_cv_text()
+    try:
+        cv_text = load_profile(job.direction).cv_text
+    except FileNotFoundError as e:
+        raise HTTPException(400, str(e))
     letter = await generate_cover_letter(job, cv_text, language=req.language)
     return {"letter": letter}
 
@@ -1022,7 +1103,10 @@ async def run_tailor_cv(req: TailorCVRequest):
         direction = req.direction or job.direction or None
         session.expunge(job)
 
-    cv_text = load_cv_text(direction=direction)
+    try:
+        cv_text = load_cv_text(direction=direction)
+    except FileNotFoundError as e:
+        raise HTTPException(400, str(e))
     result = await tailor_cv(job, cv_text)
     return result
 
@@ -1235,10 +1319,18 @@ def get_tracker():
                 "title": j.title,
                 "company": j.company,
                 "location": j.location,
+                "description": j.description,
                 "url": j.url,
                 "source": j.source,
+                "employment_type": j.employment_type,
+                "language_required": j.language_required,
+                "direction": j.direction,
+                "user_stars": j.user_stars,
                 "status": j.status,
                 "match_score": j.match_score,
+                "match_explanation": j.match_explanation,
+                "wish_score": j.wish_score,
+                "wish_explanation": j.wish_explanation,
                 "viewed_at": j.viewed_at.isoformat() if j.viewed_at else None,
                 "applied_at": j.applied_at.isoformat() if j.applied_at else None,
                 "updated_at": j.updated_at.isoformat() if j.updated_at else None,

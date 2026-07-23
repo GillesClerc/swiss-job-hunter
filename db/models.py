@@ -10,7 +10,7 @@ from typing import Optional
 
 from sqlalchemy import (
     Boolean, DateTime, Enum, Float, ForeignKey,
-    Index, Integer, String, Text, UniqueConstraint, func,
+    Index, Integer, JSON, String, Text, UniqueConstraint, func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -85,8 +85,10 @@ class Job(Base):
 
     # Pipeline state
     status: Mapped[str] = mapped_column(Enum(JobStatus), default=JobStatus.NEW, index=True)
-    match_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    match_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)          # skill/competence match
     match_explanation: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    wish_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)            # "envie" match vs profile wish_description
+    wish_explanation: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     user_stars: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 1-5, manual interest rating
 
     # Tracking timestamps
@@ -157,6 +159,50 @@ class Application(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
     job: Mapped[Job] = relationship("Job", back_populates="application")
+
+
+class Profile(Base):
+    """
+    A search profile: CV + wish description + keyword caches for one search direction.
+    `name` is the slug previously known as "direction" (e.g. "agent", "perception") —
+    Job.direction keeps storing this same slug as a loose string reference, no FK.
+    """
+    __tablename__ = "profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+
+    cv_text: Mapped[str] = mapped_column(Text)
+    wish_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Job-title terms used to scrape (LLM-extracted from the CV, editable)
+    search_keywords: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    # Weighted skill keywords used by fast_score's pre-filter (LLM-extracted, cached)
+    scoring_keywords: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    # Hash of cv_text when scoring_keywords was last generated — invalidates the cache
+    cv_text_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
+    def __repr__(self) -> str:
+        return f"<Profile name={self.name!r}>"
+
+
+class WatchedCompany(Base):
+    """
+    A company the user wants to track. Pure CRUD placeholder for now — no effect on
+    scraping or filtering yet; intended to back future per-company scrapers.
+    """
+    __tablename__ = "watched_companies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(300), unique=True, index=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    def __repr__(self) -> str:
+        return f"<WatchedCompany name={self.name!r}>"
 
 
 class CompanyInfo(Base):

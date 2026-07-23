@@ -3,11 +3,14 @@ Database session factory and helpers.
 """
 from __future__ import annotations
 
+import glob
+import hashlib
+import json
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -44,9 +47,70 @@ engine = _get_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
+_NEW_JOB_COLUMNS = {
+    "wish_score": "FLOAT",
+    "wish_explanation": "TEXT",
+}
+
+
+def _ensure_columns() -> None:
+    """Add columns introduced after the initial `jobs` table was created. Idempotent."""
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(jobs)"))}
+        for col, coltype in _NEW_JOB_COLUMNS.items():
+            if col not in existing:
+                conn.execute(text(f"ALTER TABLE jobs ADD COLUMN {col} {coltype}"))
+        conn.commit()
+
+
+def _migrate_legacy_profiles() -> None:
+    """
+    One-time import: turn legacy data/cv_{direction}.txt + json keyword caches into
+    `Profile` rows, if the profiles table is empty and legacy files exist.
+    """
+    from db.models import Profile
+
+    with get_session() as session:
+        if session.query(Profile).first() is not None:
+            return
+
+        data_dir = settings.cv_text_path.parent
+        cv_files = sorted(glob.glob(str(data_dir / "cv_*.txt")))
+        for path in cv_files:
+            name = Path(path).stem[3:]  # strip "cv_"
+            cv_text = Path(path).read_text(encoding="utf-8")
+
+            search_keywords = []
+            search_kw_path = data_dir / f"cv_search_keywords_{name}.json"
+            if search_kw_path.exists():
+                try:
+                    search_keywords = json.loads(search_kw_path.read_text(encoding="utf-8")).get("keywords", [])
+                except Exception:
+                    pass
+
+            scoring_keywords = None
+            scoring_kw_path = data_dir / f"cv_keywords_{name}.json"
+            if scoring_kw_path.exists():
+                try:
+                    scoring_keywords = json.loads(scoring_kw_path.read_text(encoding="utf-8")).get("keywords")
+                except Exception:
+                    pass
+
+            session.add(Profile(
+                name=name,
+                cv_text=cv_text,
+                wish_description=None,
+                search_keywords=search_keywords,
+                scoring_keywords=scoring_keywords,
+                cv_text_hash=hashlib.sha256(cv_text.encode()).hexdigest() if scoring_keywords else None,
+            ))
+
+
 def init_db() -> None:
-    """Create all tables. Safe to call multiple times."""
+    """Create all tables and apply lightweight migrations. Safe to call multiple times."""
     Base.metadata.create_all(bind=engine)
+    _ensure_columns()
+    _migrate_legacy_profiles()
 
 
 @contextmanager

@@ -7,10 +7,11 @@ Two modes:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -178,45 +179,34 @@ CV:
 
 
 async def load_cv_keywords(
-    cv_text: str,
-    direction: Optional[str] = None,
-    cv_path: Optional[Path] = None,
+    profile_name: str,
+    cv_text: Optional[str] = None,
 ) -> list[tuple[re.Pattern, float, str]]:
     """
-    Load compiled keyword patterns for fast_score.
-    Cache stored at data/cv_keywords_{direction}.json, invalidated by CV mtime.
-    Falls back to hardcoded _COMPILED if extraction fails.
+    Load compiled keyword patterns for fast_score's pre-filter.
+    Cache is the `scoring_keywords` column on the Profile row, invalidated by
+    a hash of `cv_text`. Falls back to the hardcoded _COMPILED list if extraction fails.
     """
-    cache_key = direction or "default"
-    cache_file = Path(f"./data/cv_keywords_{cache_key}.json")
+    from db.models import Profile
+    from db.session import get_session
 
-    if cv_path is None:
-        try:
-            from config.settings import Settings
-            cv_path = Settings().cv_text_path
-        except Exception:
-            cv_path = None
+    with get_session() as session:
+        row = session.query(Profile).filter(Profile.name == profile_name).first()
+        if not row:
+            raise FileNotFoundError(f"Profile '{profile_name}' not found.")
+        text_ = cv_text or row.cv_text
+        current_hash = hashlib.sha256(text_.encode()).hexdigest()
 
-    cv_mtime = cv_path.stat().st_mtime if cv_path and cv_path.exists() else 0.0
+        if row.scoring_keywords and row.cv_text_hash == current_hash:
+            compiled = _compile_dynamic(row.scoring_keywords)
+            if compiled:
+                return compiled
 
-    if cache_file.exists():
-        try:
-            cached = json.loads(cache_file.read_text(encoding="utf-8"))
-            if abs(cached.get("cv_mtime", 0) - cv_mtime) < 1.0:
-                compiled = _compile_dynamic(cached["keywords"])
-                if compiled:
-                    return compiled
-        except Exception:
-            pass
-
-    keywords = await _extract_keywords_llm(cv_text)
-    if keywords:
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(
-            json.dumps({"cv_mtime": cv_mtime, "keywords": keywords}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        return _compile_dynamic(keywords)
+        keywords = await _extract_keywords_llm(text_)
+        if keywords:
+            row.scoring_keywords = keywords
+            row.cv_text_hash = current_hash
+            return _compile_dynamic(keywords)
 
     return _COMPILED  # fallback to hardcoded list
 
@@ -281,13 +271,62 @@ def fast_score(
     )
 
 
-async def llm_score(cv_text: str, job_title: str, jd_text: str) -> MatchResult:
-    """Deep LLM-based scoring via Claude / DeepSeek."""
+@dataclass
+class DualMatchResult:
+    """Result of score_job: technical fit + optional 'wish' fit + required language."""
+    skill_score: float
+    skill_explanation: str
+    matched_skills: list[str] = field(default_factory=list)
+    missing_skills: list[str] = field(default_factory=list)
+    wish_score: Optional[float] = None
+    wish_explanation: Optional[str] = None
+    language_required: Optional[str] = None
+    provider: str = "llm"
+
+
+def _parse_json_object(raw: str) -> Optional[dict]:
+    """Shared robust JSON-object parser used by score_job (and friends)."""
+    raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
+    raw = re.sub(r"\n?```$", "", raw)
+
+    m = re.search(r'\{.*\}', raw, re.DOTALL)
+    if not m:
+        return None
+
+    json_str = m.group(0)
+    json_str = json_str.replace('\u201c', '"').replace('\u201d', '"')
+    json_str = json_str.replace('\u2018', "'").replace('\u2019', "'")
+    json_str = re.sub(r'(?<=:)\s*"([^"]*?)\n([^"]*?)"',
+                      lambda x: ': "' + x.group(1) + ' ' + x.group(2) + '"',
+                      json_str)
+
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        return None
+
+
+async def score_job(cv_text: str, wish_text: Optional[str], job_title: str, jd_text: str) -> DualMatchResult:
+    """
+    Deep LLM-based scoring via Claude / DeepSeek / etc \u2014 one combined call that returns:
+    - skill_score: technical fit of the CV against the job description
+    - wish_score: how well the job matches the candidate's stated wishes (only if wish_text given)
+    - language_required: language(s) the job posting requires, if stated/implied
+    """
     from llm.router import call_llm
+
+    wish_block = ""
+    if wish_text and wish_text.strip():
+        wish_block = f"""
+
+## What the candidate is looking for (mission type, culture, values, etc.)
+{wish_text.strip()[:2000]}
+
+Also set "wish_score" (0.0-1.0): how well this job matches what the candidate is looking for above,
+independent of technical fit. Set "wish_explanation" to a 1-2 sentence justification."""
 
     system = (
         "You are an expert technical recruiter evaluating a candidate for a job in Switzerland. "
-        "The candidate is a Senior ML/Perception Engineer specializing in autonomous driving. "
         "Respond only with valid JSON."
     )
     user = f"""Evaluate this candidate's fit for the job.
@@ -297,70 +336,79 @@ async def llm_score(cv_text: str, job_title: str, jd_text: str) -> MatchResult:
 
 ## Job: {job_title}
 {jd_text[:8000]}
+{wish_block}
+
+Also set "language_required": the language(s) required to perform this job, as stated or clearly
+implied by the posting (e.g. "de", "en", "fr", "it", or a combination like "de/en"). Use null if
+the posting doesn't specify.
 
 Return ONLY valid JSON (no markdown):
 {{
-  "score": <float 0.0-1.0>,
+  "skill_score": <float 0.0-1.0>,
   "matched_skills": ["skill1", "skill2"],
   "missing_skills": ["skill3"],
-  "explanation": "2-3 sentence assessment focusing on technical fit and role alignment"
+  "skill_explanation": "2-3 sentence assessment focusing on technical fit and role alignment",
+  "wish_score": <float 0.0-1.0 or null>,
+  "wish_explanation": "<string or null>",
+  "language_required": "<string or null>"
 }}"""
 
     raw, provider = await call_llm(user=user, system=system, max_tokens=1024)
+    data = _parse_json_object(raw)
 
-    # Strip markdown fences
-    raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
-    raw = re.sub(r"\n?```$", "", raw)
-
-    # Extract JSON object even if there's surrounding text
-    m = re.search(r'\{.*\}', raw, re.DOTALL)
-    if not m:
-        return MatchResult(
-            score=0.0, matched_skills=[], missing_skills=[],
-            explanation=f"LLM returned unparseable response: {raw[:100]}",
+    if data is None:
+        return DualMatchResult(
+            skill_score=0.0,
+            skill_explanation=f"LLM returned unparseable response: {raw[:100]}",
             provider=provider,
         )
 
-    # Clean common JSON issues: smart quotes, unescaped newlines in strings
-    json_str = m.group(0)
-    json_str = json_str.replace('\u201c', '"').replace('\u201d', '"')
-    json_str = json_str.replace('\u2018', "'").replace('\u2019', "'")
-    # Remove literal newlines inside string values
-    json_str = re.sub(r'(?<=:)\s*"([^"]*?)\n([^"]*?)"', 
-                      lambda x: ': "' + x.group(1) + ' ' + x.group(2) + '"', 
-                      json_str)
-
-    try:
-        data = json.loads(json_str)
-    except json.JSONDecodeError:
-        # Last resort: extract fields with regex
-        score_m = re.search(r'"score"\s*:\s*([0-9.]+)', json_str)
-        expl_m  = re.search(r'"explanation"\s*:\s*"([^"]{10,})"', json_str)
-        return MatchResult(
-            score=float(score_m.group(1)) if score_m else 0.0,
-            matched_skills=[],
-            missing_skills=[],
-            explanation=expl_m.group(1) if expl_m else "Parse error",
-            provider=provider,
-        )
-    return MatchResult(
-        score=float(data.get("score", 0.0)),
+    wish_score = data.get("wish_score")
+    return DualMatchResult(
+        skill_score=float(data.get("skill_score", 0.0)),
+        skill_explanation=data.get("skill_explanation", ""),
         matched_skills=data.get("matched_skills", []),
         missing_skills=data.get("missing_skills", []),
-        explanation=data.get("explanation", ""),
+        wish_score=float(wish_score) if wish_score is not None else None,
+        wish_explanation=data.get("wish_explanation"),
+        language_required=data.get("language_required"),
         provider=provider,
     )
 
 
-def load_cv_text(path: Optional[Path] = None, direction: Optional[str] = None) -> str:
-    if direction:
-        candidate = Path(f"./data/cv_{direction}.txt")
-        if candidate.exists():
-            return candidate.read_text(encoding="utf-8")
-    p = path or settings.cv_text_path
-    if not p.exists():
-        raise FileNotFoundError(
-            f"CV text not found at {p}. "
-            "Copy your CV as plain text to data/cv.txt"
+@dataclass
+class ProfileData:
+    """Plain snapshot of a Profile DB row \u2014 safe to use after the session closes."""
+    name: str
+    cv_text: str
+    wish_description: Optional[str]
+    search_keywords: list[str]
+    scoring_keywords: Optional[list]
+    cv_text_hash: Optional[str]
+
+
+def load_profile(name: str) -> ProfileData:
+    """Load a search profile (CV + wish description + keyword caches) from the DB."""
+    from db.models import Profile
+    from db.session import get_session
+
+    if not name:
+        raise FileNotFoundError("No profile specified. Create/select a profile in the Profiles tab.")
+
+    with get_session() as session:
+        row = session.query(Profile).filter(Profile.name == name).first()
+        if not row:
+            raise FileNotFoundError(f"Profile '{name}' not found. Create it in the Profiles tab.")
+        return ProfileData(
+            name=row.name,
+            cv_text=row.cv_text,
+            wish_description=row.wish_description,
+            search_keywords=list(row.search_keywords or []),
+            scoring_keywords=row.scoring_keywords,
+            cv_text_hash=row.cv_text_hash,
         )
-    return p.read_text(encoding="utf-8")
+
+
+def load_cv_text(direction: Optional[str] = None) -> str:
+    """Back-compat shim: return just the CV text of a profile by name."""
+    return load_profile(direction).cv_text

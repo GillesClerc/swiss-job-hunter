@@ -159,27 +159,30 @@ async def _enrich(limit: int, source: str) -> None:
 # ── analyze ───────────────────────────────────────────────────────────────────
 @app.command()
 def analyze(
+    profile: str = typer.Option(..., "--profile", "-p", help="Profile name to score against"),
     limit: int = typer.Option(100, "--limit", "-n", help="Max jobs to analyze"),
     llm: bool = typer.Option(False, "--llm", help="Use LLM scoring (slower, more accurate)"),
     min_score: float = typer.Option(0.3, "--min-score", help="Min score to shortlist"),
     rescore: bool = typer.Option(False, "--rescore", help="Re-score all jobs regardless of status"),
     concurrency: int = typer.Option(10, "--concurrency", "-c", help="Parallel LLM workers"),
 ) -> None:
-    """Score jobs against your CV and shortlist top matches."""
-    asyncio.run(_analyze(limit, llm, min_score, rescore, concurrency))
+    """Score jobs against a profile's CV and shortlist top matches."""
+    asyncio.run(_analyze(profile, limit, llm, min_score, rescore, concurrency))
 
 
-async def _analyze(limit: int, use_llm: bool, min_score: float, rescore: bool, concurrency: int) -> None:
+async def _analyze(profile: str, limit: int, use_llm: bool, min_score: float, rescore: bool, concurrency: int) -> None:
     import asyncio as _asyncio
-    from analyzer.scorer import fast_score, llm_score, load_cv_text
+    from analyzer.scorer import fast_score, score_job, load_profile
     from db.models import Job, JobStatus
     from db.session import get_session
 
     try:
-        cv_text = load_cv_text()
+        prof = load_profile(profile)
     except FileNotFoundError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
+    cv_text = prof.cv_text
+    wish_text = prof.wish_description
 
     with get_session() as session:
         q = session.query(Job.id, Job.title, Job.description, Job.status).filter(
@@ -206,18 +209,22 @@ async def _analyze(limit: int, use_llm: bool, min_score: float, rescore: bool, c
         async def score_one(jid: int, title: str, description: str, old_status) -> None:
             nonlocal shortlisted, completed
             async with sem:
-                result = await llm_score(cv_text, title, description)
+                result = await score_job(cv_text, wish_text, title, description)
             with get_session() as session:
                 j = session.get(Job, jid)
                 if j:
-                    j.match_score = result.score
-                    j.match_explanation = result.explanation
+                    j.match_score = result.skill_score
+                    j.match_explanation = result.skill_explanation
+                    j.wish_score = result.wish_score
+                    j.wish_explanation = result.wish_explanation
+                    if result.language_required:
+                        j.language_required = result.language_required
                     # Preserve ARCHIVED/VIEWED; only promote NEW/ANALYZED
                     if j.status in (JobStatus.NEW, JobStatus.ANALYZED):
                         j.status = (
-                            JobStatus.SHORTLISTED if result.score >= min_score else JobStatus.ANALYZED
+                            JobStatus.SHORTLISTED if result.skill_score >= min_score else JobStatus.ANALYZED
                         )
-                    if result.score >= min_score:
+                    if result.skill_score >= min_score:
                         shortlisted += 1
             completed += 1
             if completed % 50 == 0 or completed == total:
@@ -227,19 +234,28 @@ async def _analyze(limit: int, use_llm: bool, min_score: float, rescore: bool, c
     else:
         for jid, title, description, _ in rows:
             if use_llm:
-                result = await llm_score(cv_text, title, description)
+                result = await score_job(cv_text, wish_text, title, description)
+                score = result.skill_score
+                explanation = result.skill_explanation
             else:
                 result = fast_score(cv_text, description)
+                score = result.score
+                explanation = result.explanation
 
             with get_session() as session:
                 j = session.get(Job, jid)
                 if j:
-                    j.match_score = result.score
-                    j.match_explanation = result.explanation
+                    j.match_score = score
+                    j.match_explanation = explanation
+                    if use_llm:
+                        j.wish_score = result.wish_score
+                        j.wish_explanation = result.wish_explanation
+                        if result.language_required:
+                            j.language_required = result.language_required
                     j.status = (
-                        JobStatus.SHORTLISTED if result.score >= min_score else JobStatus.ANALYZED
+                        JobStatus.SHORTLISTED if score >= min_score else JobStatus.ANALYZED
                     )
-                    if result.score >= min_score:
+                    if score >= min_score:
                         shortlisted += 1
 
     console.print(f"✓ Done. [yellow]{shortlisted}[/yellow] jobs shortlisted (score ≥ {min_score:.0%})")
@@ -269,14 +285,15 @@ def digest() -> None:
 @app.command()
 def cover(
     job_id: int = typer.Argument(..., help="Job ID to generate cover letter for"),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name (defaults to the job's own direction)"),
     language: str = typer.Option("en", "--lang", "-l", help="Language: en | de"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Output file path"),
 ) -> None:
     """Generate a cover letter for a specific job."""
-    asyncio.run(_cover(job_id, language, output))  # type: ignore[arg-type]
+    asyncio.run(_cover(job_id, profile, language, output))  # type: ignore[arg-type]
 
 
-async def _cover(job_id: int, language: str, output: Optional[str]) -> None:
+async def _cover(job_id: int, profile: Optional[str], language: str, output: Optional[str]) -> None:
     from analyzer.scorer import load_cv_text
     from llm.cover_letter import generate_cover_letter, save_cover_letter
     from db.models import Job
@@ -287,8 +304,13 @@ async def _cover(job_id: int, language: str, output: Optional[str]) -> None:
         if not job:
             console.print(f"[red]Job {job_id} not found[/red]")
             raise typer.Exit(1)
+        session.expunge(job)
 
-    cv_text = load_cv_text()
+    try:
+        cv_text = load_cv_text(direction=profile or job.direction)
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
     console.print(f"Generating cover letter for: [bold]{job.title}[/bold] @ {job.company}...")
 
     letter = await generate_cover_letter(job, cv_text, language=language)  # type: ignore[arg-type]
