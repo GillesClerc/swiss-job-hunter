@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { API } from "../api";
 import { SOURCES, ENRICHABLE, LANGUAGES, STATUS_META, inp } from "../constants";
 import Btn from "../components/Btn";
@@ -20,7 +20,6 @@ export default function SearchTab() {
   const [log, setLog] = useState([]);
   const addLog = useCallback(l => setLog(p=>[...p.slice(-300),l]),[]);
   const [loading, setLoading] = useState({});
-  const pipelineRunning = useRef(false);
 
   const [jobs, setJobs] = useState([]);
   const [stats, setStats] = useState({});
@@ -161,28 +160,6 @@ export default function SearchTab() {
     const list = sources.length ? sources : [searchSrc[0] || "jobs.ch"];
     list.forEach(src => runStream("run/enrich", {limit:9999, source:src, rescore_llm:true, direction:profileName || null}, `enrich-llm-${src}`));
   }, [profileName, searchSrc, runStream]);
-
-  const runPipeline = useCallback(async () => {
-    if (pipelineRunning.current) { addLog("✗ Pipeline already running"); return; }
-    const kws = currentKeywords();
-    if (!kws.length) { addLog("✗ No keywords set"); return; }
-    const enrichSources = searchSrc.filter(s => ENRICHABLE.includes(s));
-
-    pipelineRunning.current = true;
-    setLoading(p=>({...p, pipeline:true}));
-    addLog("━━━ PIPELINE START ━━━");
-    try {
-      await runStream("run/search", {keywords:kws, keyword:kws[0]||"", location:searchLoc, sources:searchSrc, pages:searchPages, semantic:false, direction:profileName || null, linkedin_time_range:linkedinTimeRange, linkedin_experience_level:linkedinExpLevel}, "search");
-      for (const src of (enrichSources.length ? enrichSources : [searchSrc[0]||"jobs.ch"])) {
-        await runStream("run/enrich", {limit:9999, source:src, rescore_llm:false, direction:profileName || null}, `enrich-${src}`);
-      }
-      await runStream("run/analyze", {limit:9999, llm:true, archive_below:threshold/100, direction:profileName || null}, "analyze-llm");
-      addLog("━━━ PIPELINE DONE ━━━");
-    } finally {
-      pipelineRunning.current = false;
-      setLoading(p=>({...p, pipeline:false}));
-    }
-  }, [currentKeywords, searchSrc, searchLoc, searchPages, profileName, linkedinTimeRange, linkedinExpLevel, threshold, runStream, addLog]);
 
   const checkAgain = useCallback(async () => {
     const baseId = jobs.reduce((m,j)=>Math.max(m, j.id), 0);
@@ -347,21 +324,6 @@ export default function SearchTab() {
                     </select>
                   </>)}
                   <div style={{height:1,background:"#d4dece",margin:"2px 0"}}/>
-                  <Btn onClick={runPipeline} loading={loading.pipeline}
-                    disabled={loading.pipeline||loading.search||loading["analyze-llm"]||Object.keys(loading).some(k=>k.startsWith("enrich")&&loading[k])}
-                    label="SEARCH + ENRICH + SCORE" icon="⚡" color="#a78bfa"/>
-                  <Btn onClick={()=>{
-                    const sources=searchSrc.filter(s=>ENRICHABLE.includes(s));
-                    (sources.length?sources:[searchSrc[0]||"jobs.ch"]).forEach(src=>runStream("run/enrich",{limit:9999,source:src,rescore_llm:false,direction:profileName||null},`enrich-${src}`));
-                  }} loading={loading.enrich} label="ENRICH DESCRIPTIONS" icon="📄" color="#2e7d52" disabled={!stats.total}/>
-                  <Btn onClick={()=>runStream("run/analyze",{limit:9999,llm:false,direction:profileName||null},"analyze")}
-                    loading={loading.analyze} label="SCORE (KEYWORD)" icon="⚡" color="#f59e0b" disabled={!stats.total}/>
-                  <div style={{display:"flex",alignItems:"center",gap:6}}>
-                    <Btn onClick={()=>runStream("run/analyze",{limit:9999,llm:true,archive_below:threshold/100,direction:profileName||null},"analyze-llm")}
-                      loading={loading["analyze-llm"]} label="SCORE (LLM)" icon="🧠" color="#a78bfa" disabled={!stats.total}/>
-                    <Btn onClick={()=>runStream("run/analyze",{llm:true,skip_scored:false,archive_below:threshold/100,concurrency:10,direction:profileName||null},"rescore-all")}
-                      loading={loading["rescore-all"]} label="RESCORE ALL" icon="🔄" color="#6366f1" disabled={!stats.total}/>
-                  </div>
                   <Btn onClick={()=>runStream("run/company-lookup",{min_score:threshold/100},"company-lookup")}
                     loading={loading["company-lookup"]} label="LOOKUP COMPANIES" icon="🏢" color="#2e7d52" disabled={!stats.total}/>
                   <div style={{display:"flex",alignItems:"center",gap:5}}>
