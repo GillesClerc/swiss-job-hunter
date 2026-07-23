@@ -11,7 +11,7 @@ from typing import AsyncGenerator
 from bs4 import BeautifulSoup
 
 from scrapers.base import BaseScraper, ScrapedJob
-from scrapers.company_common import get_cached, matches_keyword, set_cached
+from scrapers.company_common import get_cached, set_cached
 
 LISTING_URL = "https://www.lagoule.ch/fr/jobs-et-carrieres"
 
@@ -51,12 +51,8 @@ class LaGouleScraper(BaseScraper):
         self, keyword: str, location: str, max_pages: int
     ) -> AsyncGenerator[ScrapedJob, None]:
         jobs = await self._fetch_all()
-        yielded = 0
-        limit = max_pages * 20
 
         for j in jobs:
-            if not matches_keyword(j["title"], keyword):
-                continue
             yield ScrapedJob(
                 title=j["title"],
                 company="La Goule",
@@ -66,6 +62,3 @@ class LaGouleScraper(BaseScraper):
                 source=self.source_name,
                 source_job_id=j["title"],
             )
-            yielded += 1
-            if yielded >= limit:
-                break

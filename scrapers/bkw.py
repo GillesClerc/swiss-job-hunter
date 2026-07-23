@@ -7,9 +7,21 @@ from __future__ import annotations
 from typing import AsyncGenerator
 
 from scrapers.base import BaseScraper, ScrapedJob
-from scrapers.company_common import get_cached, matches_keyword, set_cached
+from scrapers.company_common import get_cached, set_cached
 
 LISTING_URL = "https://jobs.bkw.com/_api/v1/structureddata?configFromContentElement=82381&language=de-ch"
+
+
+def _as_text(value) -> str:
+    """BKW's `relations.*` fields can be a string, a dict, or a list of
+    either (multi-value taxonomy fields) — normalize any of them to text."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ", ".join(_as_text(v) for v in value if v)
+    if isinstance(value, dict):
+        return str(value.get("title") or value.get("name") or value.get("label") or "")
+    return str(value)
 
 
 class BKWScraper(BaseScraper):
@@ -30,24 +42,25 @@ class BKWScraper(BaseScraper):
     async def scrape(
         self, keyword: str, location: str, max_pages: int
     ) -> AsyncGenerator[ScrapedJob, None]:
+        # BKW's API returns the entire current listing in one response — there's
+        # no per-keyword search or real pagination to honor, so every postings
+        # is yielded and the app's scoring step (not title substring matching)
+        # decides relevance.
         jobs = await self._fetch_all()
-        yielded = 0
-        limit = max_pages * 20
 
         for j in jobs:
-            title = j.get("title", "")
-            if not matches_keyword(title, keyword):
-                continue
-
+            title = _as_text(j.get("title", ""))
             locations = j.get("locations") or []
-            city = locations[0].get("address", {}).get("city") if locations else None
+            city = None
+            if locations and isinstance(locations[0], dict):
+                city = _as_text((locations[0].get("address") or {}).get("city")) or None
             job_location = city or location or "Switzerland"
 
-            relations = j.get("relations", {})
-            pensum = j.get("pensum", {})
+            relations = j.get("relations", {}) or {}
+            pensum = j.get("pensum", {}) or {}
             description_parts = [
-                relations.get("Berufsfeld", ""),
-                relations.get("Unternehmen", ""),
+                _as_text(relations.get("Berufsfeld")),
+                _as_text(relations.get("Unternehmen")),
                 f"{pensum.get('min')}–{pensum.get('max')}%" if pensum.get("min") else "",
             ]
             description = " · ".join(p for p in description_parts if p) or title
@@ -60,12 +73,9 @@ class BKWScraper(BaseScraper):
                 url=j.get("url", "https://jobs.bkw.com/de/offene-stellen"),
                 source=self.source_name,
                 source_job_id=str(j.get("id", "")),
-                employment_type=relations.get("Anstellungsart"),
+                employment_type=_as_text(relations.get("Anstellungsart")) or None,
                 remote_ok=bool(j.get("Remotework")) or None,
             )
-            yielded += 1
-            if yielded >= limit:
-                break
 
     async def fetch_full_description(self, source_job_id: str):
         """BKW's listing JSON has no per-job description field to enrich beyond

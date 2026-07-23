@@ -9,7 +9,7 @@ from typing import AsyncGenerator
 from bs4 import BeautifulSoup
 
 from scrapers.base import BaseScraper, ScrapedJob
-from scrapers.company_common import get_cached, matches_keyword, set_cached
+from scrapers.company_common import get_cached, set_cached
 
 LISTING_URL = "https://jobs.helion.ch/"
 
@@ -44,13 +44,11 @@ class HelionScraper(BaseScraper):
     async def scrape(
         self, keyword: str, location: str, max_pages: int
     ) -> AsyncGenerator[ScrapedJob, None]:
+        # The listing page has no per-keyword search — every current posting
+        # is yielded and the app's scoring step decides relevance.
         jobs = await self._fetch_all()
-        yielded = 0
-        limit = max_pages * 20
 
         for j in jobs:
-            if not matches_keyword(j["title"], keyword):
-                continue
             yield ScrapedJob(
                 title=j["title"],
                 company="Helion",
@@ -60,9 +58,6 @@ class HelionScraper(BaseScraper):
                 source=self.source_name,
                 source_job_id=j["url"],
             )
-            yielded += 1
-            if yielded >= limit:
-                break
 
     async def fetch_full_description(self, source_job_id: str):
         try:

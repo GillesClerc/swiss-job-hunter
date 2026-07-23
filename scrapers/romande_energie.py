@@ -10,7 +10,7 @@ from typing import AsyncGenerator, Optional
 from bs4 import BeautifulSoup
 
 from scrapers.base import BaseScraper, ScrapedJob
-from scrapers.company_common import get_cached, matches_keyword, set_cached
+from scrapers.company_common import get_cached, set_cached
 
 CAREERS_URL = "https://www.romande-energie.ch/carrieres/nos-offres-demploi"
 
@@ -47,15 +47,13 @@ class RomandeEnergieScraper(BaseScraper):
     async def scrape(
         self, keyword: str, location: str, max_pages: int
     ) -> AsyncGenerator[ScrapedJob, None]:
+        # The JoHDI API returns every current offer in one response — no
+        # per-keyword search to honor, so everything is yielded and the app's
+        # scoring step decides relevance.
         offers = await self._fetch_all()
-        yielded = 0
-        limit = max_pages * 20
 
         for o in offers:
             title = o.get("title", "")
-            if not matches_keyword(title, keyword):
-                continue
-
             intro_html = o.get("introduction") or ""
             description = BeautifulSoup(intro_html, "lxml").get_text("\n", strip=True) or title
 
@@ -71,6 +69,3 @@ class RomandeEnergieScraper(BaseScraper):
                 source_job_id=str(o.get("id", o.get("slug", ""))),
                 employment_type=o.get("contract_type"),
             )
-            yielded += 1
-            if yielded >= limit:
-                break

@@ -12,7 +12,7 @@ import re
 from typing import AsyncGenerator, Optional
 
 from scrapers.base import BaseScraper, ScrapedJob
-from scrapers.company_common import get_cached, matches_keyword, set_cached
+from scrapers.company_common import get_cached, set_cached
 
 PAGE_SIZE = 20
 
@@ -75,15 +75,15 @@ class WorkdayScraper(BaseScraper):
     async def scrape(
         self, keyword: str, location: str, max_pages: int
     ) -> AsyncGenerator[ScrapedJob, None]:
+        # `_search_filter` (a real Workday-side query, e.g. "Switzerland") already
+        # scopes the tenant — the per-profile `keyword` isn't applied client-side
+        # on top of that: generic search phrases rarely match literal job titles,
+        # so every current posting is yielded and the app's scoring step decides
+        # relevance instead.
         postings = await self._fetch_all_postings()
-        yielded = 0
-        limit = max_pages * PAGE_SIZE
 
         for posting in postings:
             title = posting.get("title", "")
-            if not matches_keyword(title, keyword):
-                continue
-
             external_path = self._normalize_job_path(posting.get("externalPath", ""))
             job_id_match = re.search(r"_(R\d+|JR\d+|\d+)$", external_path)
             source_job_id = job_id_match.group(1) if job_id_match else external_path
@@ -99,9 +99,6 @@ class WorkdayScraper(BaseScraper):
                 source=self.source_name,
                 source_job_id=external_path,  # kept as the path — used verbatim by fetch_full_description
             )
-            yielded += 1
-            if yielded >= limit:
-                break
 
     async def fetch_full_description(self, external_path: str):
         """Fetch the full job description for the Enrich pipeline."""
