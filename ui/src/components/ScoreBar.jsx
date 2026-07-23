@@ -1,16 +1,23 @@
-export function DualScore({ skillScore, wishScore }) {
+function ScoreChip({ label, score, color }) {
+  const known = score != null;
+  const pct = known ? Math.round(score * 100) : null;
   return (
-    <div style={{display:"flex",flexDirection:"column",gap:2,alignItems:"flex-end"}}>
-      <div style={{display:"flex",alignItems:"center",gap:4}}>
-        <span style={{fontSize:8,color:"#6b8c7a",width:14,textAlign:"right"}}>C</span>
-        <ScoreBar score={skillScore}/>
-      </div>
-      {wishScore != null && (
-        <div style={{display:"flex",alignItems:"center",gap:4}}>
-          <span style={{fontSize:8,color:"#6b8c7a",width:14,textAlign:"right"}}>E</span>
-          <ScoreBar score={wishScore} accent="#a78bfa"/>
-        </div>
-      )}
+    <span title={label === "C" ? "Compétence" : "Envie"} style={{
+      fontSize:9,fontWeight:700,fontFamily:"monospace",whiteSpace:"nowrap",
+      color: known ? color : "#9db0a5",
+      background: known ? `${color}18` : "transparent",
+      border:`1px solid ${known ? color+"40" : "#d4dece"}`,
+      borderRadius:3,padding:"1px 4px",
+    }}>{label}{known ? `${pct}%` : "—"}</span>
+  );
+}
+
+export function DualScore({ skillScore, wishScore }) {
+  const skillColor = skillScore == null ? "#6b8c7a" : skillScore >= 0.7 ? "#34d399" : skillScore >= 0.4 ? "#f59e0b" : "#f87171";
+  return (
+    <div style={{display:"flex",gap:4,alignItems:"center"}}>
+      <ScoreChip label="C" score={skillScore} color={skillColor}/>
+      <ScoreChip label="E" score={wishScore} color="#a78bfa"/>
     </div>
   );
 }

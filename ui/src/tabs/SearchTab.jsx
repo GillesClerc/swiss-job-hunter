@@ -48,6 +48,7 @@ export default function SearchTab() {
   const [filterMinStars, setFilterMinStars] = useState(0);
   const [filterLanguage, setFilterLanguage] = useState("all");
   const [threshold, setThreshold] = useState(10); // percent — shared by archive/purge/filter
+  const [sortBy, setSortBy] = useState("competence"); // "competence" | "envie"
 
   const selected = jobs.find(j => j.id === selectedId) || null;
 
@@ -175,10 +176,17 @@ export default function SearchTab() {
     fetchJobs(); fetchStats();
   };
 
+  const sortKey = sortBy === "competence" ? "match_score" : "wish_score";
   const visible = jobs.filter(j=>
     (threshold===0 || (j.match_score!=null && j.match_score*100 >= threshold)) &&
     (newSinceId===null || j.id > newSinceId)
-  );
+  ).sort((a,b)=>{
+    const av = a[sortKey], bv = b[sortKey];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return bv - av;
+  });
 
   return (
     <>
@@ -434,6 +442,21 @@ export default function SearchTab() {
               : <span>· click to inspect · opens URL · auto-marks VIEWED</span>
             }
             <div style={{flex:1}}/>
+            <span style={{color:"#6b8c7a"}}>trier par</span>
+            <button onClick={()=>setSortBy("competence")} style={{
+              fontSize:9,padding:"2px 7px",borderRadius:3,border:"1px solid",
+              borderColor:sortBy==="competence"?"#2e7d5240":"#d4dece",
+              background:sortBy==="competence"?"#2e7d5215":"transparent",
+              color:sortBy==="competence"?"#2e7d52":"#6b8c7a",
+              cursor:"pointer",fontFamily:"monospace",fontWeight:700,
+            }}>COMPÉTENCE</button>
+            <button onClick={()=>setSortBy("envie")} style={{
+              fontSize:9,padding:"2px 7px",borderRadius:3,border:"1px solid",
+              borderColor:sortBy==="envie"?"#a78bfa40":"#d4dece",
+              background:sortBy==="envie"?"#a78bfa15":"transparent",
+              color:sortBy==="envie"?"#a78bfa":"#6b8c7a",
+              cursor:"pointer",fontFamily:"monospace",fontWeight:700,
+            }}>ENVIE</button>
             <button onClick={fetchJobs} style={{background:"none",border:"none",color:"#5a7a68",cursor:"pointer"}}>↺</button>
           </div>
           <div style={{flex:1,overflowY:"auto"}}>
@@ -448,7 +471,7 @@ export default function SearchTab() {
                   style={{
                     padding:"9px 14px",borderBottom:"1px solid #e8ede4",
                     borderLeft:"2px solid transparent",
-                    display:"grid",gridTemplateColumns:"26px 1fr 100px 78px 70px 52px 18px",
+                    display:"grid",gridTemplateColumns:"26px 1fr 100px 96px 60px 52px 18px",
                     alignItems:"center",gap:8,cursor:"pointer",transition:"background 0.1s",
                   }}>
                   <span style={{fontSize:9,color:"#6b8c7a",fontWeight:700}}>#{j.id}</span>
