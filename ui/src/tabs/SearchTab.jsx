@@ -497,7 +497,16 @@ export default function SearchTab() {
                       {j.company} · {j.location}
                     </div>
                   </div>
-                  <Badge status={j.status}/>
+                  <div style={{display:"flex",flexDirection:"column",gap:2,alignItems:"center"}}>
+                    <Badge status={j.status}/>
+                    {(!j.description || j.description.length < 100) && (
+                      <span title="Description pas encore récupérée — lancer Enrich + LLM Score" style={{
+                        fontSize:7,fontFamily:"monospace",fontWeight:700,color:"#f59e0b",
+                        background:"#f59e0b15",border:"1px solid #f59e0b40",borderRadius:2,
+                        padding:"1px 4px",letterSpacing:"0.05em",whiteSpace:"nowrap",
+                      }}>BRUT</span>
+                    )}
+                  </div>
                   <DualScore skillScore={j.match_score} wishScore={j.wish_score}/>
                   <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:2}}>
                     {j.direction&&<span style={{fontSize:7,fontFamily:"monospace",fontWeight:700,

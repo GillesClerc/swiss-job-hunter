@@ -72,10 +72,19 @@ export default function TrackerTab() {
                             cursor:"pointer",transition:"all 0.1s",
                           }}
                         >
-                          <div style={{fontSize:10,fontWeight:600,color:"#1a2e20",
-                            lineHeight:1.25,overflow:"hidden",textOverflow:"ellipsis",
-                            whiteSpace:"nowrap"}}>
-                            {j.title}
+                          <div style={{display:"flex",alignItems:"center",gap:4}}>
+                            <div style={{fontSize:10,fontWeight:600,color:"#1a2e20",
+                              lineHeight:1.25,overflow:"hidden",textOverflow:"ellipsis",
+                              whiteSpace:"nowrap",flex:1,minWidth:0}}>
+                              {j.title}
+                            </div>
+                            {(!j.description || j.description.length < 100) && (
+                              <span title="Description pas encore récupérée" style={{
+                                fontSize:7,fontFamily:"monospace",fontWeight:700,color:"#f59e0b",
+                                background:"#f59e0b15",border:"1px solid #f59e0b40",borderRadius:2,
+                                padding:"1px 3px",flexShrink:0,
+                              }}>BRUT</span>
+                            )}
                           </div>
                           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:2}}>
                             <span style={{fontSize:8,color:"#4a7a60",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:80}}>
